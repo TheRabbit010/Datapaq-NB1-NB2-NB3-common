@@ -7,8 +7,11 @@ import numpy as np
 import olefile
 import pandas as pd
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import streamlit as st
+import statistics
 from PIL import Image
+from datetime import datetime, time, timedelta
 
 # ==============================================================================
 # STREAMLIT PAGE CONFIGURATION & CSS STYLING
@@ -21,11 +24,48 @@ div[data-testid="stMetricValue"] { font-size: 1.8rem !important; font-weight: 70
 div[data-testid="stMetricLabel"] { font-size: 1.1rem !important; font-weight: 500 !important; color: #a0aab2 !important; }
 div.stButton > button:first-child { background-color: #ff4b4b; color: white; font-weight: bold; border-radius: 5px; width: 100%; margin-bottom: 20px; }
 div.stButton > button:first-child:hover { background-color: #ff3333; border-color: #ff3333; }
-button[data-baseweb="tab"] { font-size: 1.2rem !important; font-weight: 600 !important; }
-div[data-testid="stAlert"] { font-size: 1.3rem !important; font-weight: 500 !important; padding: 1rem !important; }
+
+/* ขยายขนาดตัวอักษรของปุ่ม Tab ด้านบนให้เด่นชัดขึ้น */
+button[data-baseweb="tab"] { 
+    font-size: 1.35rem !important; 
+    font-weight: 700 !important; 
+    padding: 1rem 1.5rem !important;
+}
+
+div[data-testid="stAlert"] { font-size: 1.15rem !important; font-weight: 500 !important; padding: 1rem !important; }
+
+/* Custom box styling for prominent alerts */
+.custom-info-box {
+    background-color: rgba(33, 150, 243, 0.1);
+    border-left: 5px solid #2196F3;
+    padding: 15px;
+    border-radius: 5px;
+    margin-bottom: 15px;
+    font-size: 1.05rem;
+}
+.custom-warning-box {
+    background-color: rgba(255, 252, 230, 1.0);
+    border-left: 5px solid #f39c12;
+    padding: 20px;
+    border-radius: 5px;
+    margin-bottom: 15px;
+    font-size: 1.15rem;
+    color: #8a6d3b;
+}
+
+/* Dark mode adjustments for warning box */
+@media (prefers-color-scheme: dark) {
+    .custom-warning-box {
+        background-color: rgba(255, 152, 0, 0.15);
+        color: #f39c12;
+    }
+}
 </style>
 """, unsafe_allow_html=True)
 
+# ==============================================================================
+# DATAPAQ GLOBAL CONSTANTS
+# ==============================================================================
 PROBE_COLORS = {"PB#1": "#ff0000", "PB#2": "#00ff00", "PB#3": "#0000ff", "PB#4": "#8b4513", "PB#5": "#ff00ff", "PB#6": "#b8860b", "PB#7": "#800080", "PB#8": "#00ffff", "PB#9": "#d32f2f", "PB#10": "#5c4033"}
 GROUP_COLORS = {"Dryer": "rgba(255, 235, 156, 0.15)", "Debinder": "rgba(255, 199, 119, 0.15)", "Heating": "rgba(255, 160, 160, 0.15)", "Cooling": "rgba(173, 216, 230, 0.15)"}
 
@@ -47,66 +87,6 @@ VALIDATION_RULES = {
     "NB3 (BTM)": {"Dryer Max (°C)": (300, 375), "Brazing Max (°C)": (595, 608), "Dryer Dwell (≥300°C)": (120, 99999), "Brazing Dwell (≥577°C)": (240, 840), "Brazing Dwell (≥591°C)": (120, 720), "Brazing Dwell (≥600°C)": (0, 480)}
 }
 
-def style_inspection_matrix(row, variant, check_dryer_max=False):
-    styles = [''] * len(row)
-    rules = VALIDATION_RULES.get(variant, {})
-    probe_name = row.get("Probe", "")
-    
-    for i, col in enumerate(row.index):
-        if col == "Probe": continue
-        val = row[col]
-        
-        base_bg = ""
-        if "Dryer" in col:
-            base_bg = "background-color: rgba(255, 235, 156, 0.15);" 
-        elif "Debinder" in col:
-            base_bg = "background-color: rgba(255, 199, 119, 0.15);" 
-        elif "Brazing" in col:
-            base_bg = "background-color: rgba(255, 160, 160, 0.15);" 
-            
-        if val == "***":
-            styles[i] = f'{base_bg} color: #f39c12; font-weight: bold; text-align: center;'
-            continue
-
-        rule = rules.get(col)
-        
-        if variant == "NB1 (CDS/KN9/12SHP)" and col == "Brazing Dwell (≥577°C)":
-            if probe_name in ["PB#1", "PB#5"]:
-                rule = (240, 465)
-            else:
-                rule = (120, 465)
-        
-        if not check_dryer_max and ("Dryer Max" in col or "Dryer Dwell" in col):
-            rule = None
-            
-        is_fail = False
-        if pd.isna(val) or val == "00:00:00" or val == "" or val == 0 or val == "N/A":
-            if rule and rule[0] > 0: is_fail = True
-        else:
-            if rule:
-                min_v, max_v = rule
-                if "Max (°C)" in col:
-                    try:
-                        if not (min_v <= float(val) <= max_v): is_fail = True
-                    except: pass
-                elif "Dwell" in col:
-                    try:
-                        parts = str(val).split(':')
-                        if len(parts) == 3:
-                            total_s = int(parts[0])*3600 + int(parts[1])*60 + int(parts[2])
-                            if not (min_v <= total_s <= max_v): is_fail = True
-                    except: pass
-                    
-        if rule:
-            if is_fail: 
-                styles[i] = f'background-color: rgba(255, 0, 0, 0.25); color: #d32f2f; font-weight: bold; border: 1px solid #d32f2f;'
-            else: 
-                styles[i] = f'{base_bg} color: #009900; font-weight: bold;'
-        else:
-            styles[i] = f'{base_bg}'
-            
-    return styles
-
 FURNACE_CONFIGS = {
     "NB1": {
         "line_speed_mpm": 1.400, 
@@ -127,6 +107,139 @@ FURNACE_CONFIGS = {
         "stages": [{"Stage": "Dryer", "Start (m)": 0.00, "End (m)": 5.75, "thresh": 200.0}, {"Stage": "Brazing", "Start (m)": 9.14, "End (m)": 29.98, "thresh": 577.0}]
     }
 }
+
+# ==============================================================================
+# DATAPAQ .PAQ UTILITY FUNCTIONS
+# ==============================================================================
+
+def extract_paq_collection_started(file_bytes):
+    """
+    ฟังก์ชันเจาะลึกเพื่อสกัดเอาค่า Collection Started ที่ซ่อนอยู่ใน ZLIB ของ OLE ไฟล์
+    โดยแปลงจาก Delphi TDateTime (64-bit float) กลับมาเป็น Timestamp จริง
+    """
+    epoch = datetime(1899, 12, 30)
+    try:
+        decompressed_buffers = []
+        parts = file_bytes.split(b'ZLIB')
+        for part in parts[1:]:
+            for offset in range(16):
+                try:
+                    decompressed_buffers.append(zlib.decompress(part[offset:]))
+                except: pass
+                
+        parts2 = file_bytes.split(b'\x78\x9c')
+        for part in parts2[1:]:
+            try:
+                decompressed_buffers.append(zlib.decompress(b'\x78\x9c' + part))
+            except: pass
+
+        # Strategy 1: Search near CTriggerQuantity
+        for buf in decompressed_buffers:
+            idx = buf.find(b'CTriggerQuantity')
+            if idx != -1:
+                sub_buf = buf[idx:idx+100]
+                for i in range(len(sub_buf) - 8):
+                    try:
+                        val = struct.unpack('<d', sub_buf[i:i+8])[0]
+                        if 36526.0 <= val <= 51135.0:
+                            dt = epoch + timedelta(days=val)
+                            if dt.year > 2000:
+                                return dt
+                    except: pass
+
+        # Strategy 2: Search near CLogger
+        for buf in decompressed_buffers:
+            idx = buf.find(b'CLogger')
+            if idx != -1:
+                sub_buf = buf[idx:idx+200]
+                for i in range(len(sub_buf) - 8):
+                    try:
+                        val = struct.unpack('<d', sub_buf[i:i+8])[0]
+                        if 36526.0 <= val <= 51135.0:
+                            dt = epoch + timedelta(days=val)
+                            if dt.year > 2000 and (dt.hour != 0 or dt.minute != 0 or dt.second != 0):
+                                return dt
+                    except: pass
+
+        # Strategy 3: Global median-filtered minimum
+        valid_times = []
+        for buf in decompressed_buffers:
+            for i in range(len(buf) - 8):
+                try:
+                    val = struct.unpack('<d', buf[i:i+8])[0]
+                    if 36526.0 <= val <= 51135.0:
+                        dt = epoch + timedelta(days=val)
+                        if dt.year > 2000 and (dt.hour != 0 or dt.minute != 0 or dt.second != 0):
+                            valid_times.append(dt)
+                except: pass
+                
+        if valid_times:
+            years = [d.year for d in valid_times]
+            median_year = statistics.median(years)
+            filtered_times = [d for d in valid_times if d.year == median_year]
+            if filtered_times:
+                return min(filtered_times)
+
+        return None
+    except Exception:
+        return None
+
+def style_inspection_matrix(row, variant, check_dryer_max=False):
+    styles = [''] * len(row)
+    rules = VALIDATION_RULES.get(variant, {})
+    probe_name = row.get("Probe", "")
+    
+    for i, col in enumerate(row.index):
+        if col == "Probe": continue
+        val = row[col]
+        
+        base_bg = ""
+        if "Dryer" in col: base_bg = "background-color: rgba(255, 235, 156, 0.15);" 
+        elif "Debinder" in col: base_bg = "background-color: rgba(255, 199, 119, 0.15);" 
+        elif "Brazing" in col: base_bg = "background-color: rgba(255, 160, 160, 0.15);" 
+            
+        if val == "***":
+            styles[i] = f'{base_bg} color: #f39c12; font-weight: bold; text-align: center;'
+            continue
+
+        rule = rules.get(col)
+        if variant == "NB1 (CDS/KN9/12SHP)" and col == "Brazing Dwell (≥577°C)":
+            if probe_name in ["PB#1", "PB#5"]: rule = (240, 465)
+            else: rule = (120, 465)
+        
+        if not check_dryer_max and ("Dryer Max" in col or "Dryer Dwell" in col): rule = None
+            
+        is_fail = False
+        if pd.isna(val) or val == "00:00:00" or val == "" or val == 0 or val == "N/A":
+            if rule and rule[0] > 0: is_fail = True
+        else:
+            if rule:
+                min_v, max_v = rule
+                if "Max (°C)" in col:
+                    try:
+                        if not (min_v <= float(val) <= max_v): is_fail = True
+                    except: pass
+                elif "Dwell" in col:
+                    try:
+                        parts = str(val).split(':')
+                        if len(parts) == 3:
+                            total_s = int(parts[0])*3600 + int(parts[1])*60 + int(parts[2])
+                            if not (min_v <= total_s <= max_v): is_fail = True
+                    except: pass
+                    
+        if rule:
+            if is_fail: styles[i] = f'background-color: rgba(255, 0, 0, 0.25); color: #d32f2f; font-weight: bold; border: 1px solid #d32f2f;'
+            else: styles[i] = f'{base_bg} color: #009900; font-weight: bold;'
+        else: styles[i] = f'{base_bg}'
+            
+    return styles
+
+def highlight_row_by_group(row):
+    """ฟังก์ชันระบายสีพื้นหลังทั้งแถว (Row) ในตาราง Zone Statistics อ้างอิงตาม Group"""
+    bg_color = GROUP_COLORS.get(row["Group"], "")
+    if bg_color:
+        return [f"background-color: {bg_color}"] * len(row)
+    return [""] * len(row)
 
 def decompress_stream(ole_obj, stream_name):
     try:
@@ -152,12 +265,10 @@ def extract_probe_series_autonomously(decomp_bytes):
             else:
                 glitch_count += 1
                 if len(clean_vals) > 500:
-                    if glitch_count <= 30: 
-                        clean_vals.append(clean_vals[-1] if clean_vals else 0.0)
+                    if glitch_count <= 30: clean_vals.append(clean_vals[-1] if clean_vals else 0.0)
                     else: break
                 elif glitch_count > 3: clean_vals = []
-        if len(clean_vals) > len(best_series) and max(clean_vals) > 100.0:
-            best_series = clean_vals
+        if len(clean_vals) > len(best_series) and max(clean_vals) > 100.0: best_series = clean_vals
     return best_series
 
 def format_dwell_time(total_seconds):
@@ -174,17 +285,18 @@ def clean_paq_text(raw_text):
     for p in parts:
         p = re.sub(r'^[>#;\.,\|]+', '', p).strip() 
         if len(p) < 3: continue
-        
         p = re.sub(r'\b(Untitled|Entry Zone|XFER|WatCool|Exit curtain|AirCool|Exit Zone|Dryer#1|VSTS Exit Dryer|Exit Dryer|0Hl|!@f|"onB|aaa\.\.\.|FFGCC|bbbRRR|LNNSQ|OD@)\b', ' ', p, flags=re.IGNORECASE)
-        
         is_rec_str = re.search(r'(?i)(During\s*datapaq|O2|WJ|Braze\s*Temp|Top\s*\(|Bot\s*\(|Furnace\s*Parameter|N2\s*Flow|Flux\s*Spray|Frequency\s*motor|NB\s*Top|NB\s*Bot)', p)
         if not is_rec_str:
             if re.search(r'([^\-\/0-9])\1{4,}', p) or re.search(r'[@^\$|~<>{}\[\]]{2,}', p): continue 
-        
         p = re.sub(r'#[0-9]{3,}', '', p)
         p = re.sub(r'\s+', ' ', p).strip()
         if p and len(p) >= 3: cleaned_parts.append(p)
     return " ".join(cleaned_parts)
+
+def clean_probe_location(loc_desc):
+    loc_desc = re.sub(r'^[^A-Za-z]*(Top|Bottom|Middle|Left|Right|Core)', r'\1', loc_desc, flags=re.IGNORECASE)
+    return re.sub(r'\b[A-Z](Left|Right|Middle|Bottom|Top)\b', r'\1', loc_desc, flags=re.IGNORECASE)
 
 def parse_operator_and_metadata(comments_list):
     combined = " ".join(comments_list)
@@ -256,15 +368,50 @@ def parse_operator_and_metadata(comments_list):
     
     return op, comp, site, clean_notes if clean_notes else "N/A", extra_probes
 
-def clean_probe_location(loc_desc):
-    loc_desc = re.sub(r'^[^A-Za-z]*(Top|Bottom|Middle|Left|Right|Core)', r'\1', loc_desc, flags=re.IGNORECASE)
-    return re.sub(r'\b[A-Z](Left|Right|Middle|Bottom|Top)\b', r'\1', loc_desc, flags=re.IGNORECASE)
-
 @st.cache_data
 def process_paq_file(file_bytes, filename):
     ole_bytes = io.BytesIO(file_bytes)
     ole = olefile.OleFileIO(ole_bytes)
     
+    # 1. พยายามดึง Collection Started จากระดับไบนารี OLE โดยตรง (แม่นยำที่สุด)
+    real_start_dt = extract_paq_collection_started(file_bytes)
+    
+    extracted_date = pd.Timestamp.now().date()
+    extracted_time_str = "00:00:00"
+    date_found = False
+
+    # หากดึงจากไบนารีสำเร็จ ให้ใช้ค่านี้เป็นความจริงหลักทันที
+    if real_start_dt:
+        extracted_date = real_start_dt.date()
+        extracted_time_str = real_start_dt.strftime("%I:%M:%S %p")
+        date_found = True
+        process_start_dt_str = real_start_dt.strftime('%Y-%m-%d <br> %H:%M:%S')
+    else:
+        # Fallback กรณีที่หาไม่เจอ (ใช้วิธีดั้งเดิมจากชื่อไฟล์หรือ mtime)
+        m_ymd = re.search(r'(20[1-3]\d)(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])', filename)
+        m_y_m_d = re.search(r'(20[1-3]\d)[-_](0[1-9]|1[0-2])[-_](0[1-9]|[12]\d|3[01])', filename)
+        m_d_m_y = re.search(r'(0[1-9]|[12]\d|3[01])[-_](0[1-9]|1[0-2])[-_](20[1-3]\d)', filename)
+        try:
+            if m_ymd: extracted_date, date_found = pd.to_datetime(f"{m_ymd.group(1)}-{m_ymd.group(2)}-{m_ymd.group(3)}").date(), True
+            elif m_y_m_d: extracted_date, date_found = pd.to_datetime(f"{m_y_m_d.group(1)}-{m_y_m_d.group(2)}-{m_y_m_d.group(3)}").date(), True
+            elif m_d_m_y: extracted_date, date_found = pd.to_datetime(f"{m_d_m_y.group(3)}-{m_d_m_y.group(2)}-{m_d_m_y.group(1)}").date(), True
+        except: pass
+        
+        try:
+            mtime = ole.root.getmtime()
+            if mtime:
+                if not date_found: extracted_date = mtime.date()
+                extracted_time_str = mtime.strftime("%I:%M:%S %p")
+            else:
+                for st_path in ole.listdir():
+                    smtime = ole.getmtime(st_path)
+                    if smtime:
+                        if not date_found: extracted_date = smtime.date()
+                        extracted_time_str = smtime.strftime("%I:%M:%S %p")
+                        break
+        except: pass
+        process_start_dt_str = "Error calculating absolute time"
+
     raw_texts = []
     embedded_img = None
     for stream_path in ole.listdir():
@@ -281,7 +428,7 @@ def process_paq_file(file_bytes, filename):
                 for header in [b'\x89PNG\r\n\x1a\n', b'\xff\xd8\xff', b'BM']:
                     idx = data_b.find(header)
                     if idx != -1:
-                        try:
+                        try: 
                             embedded_img = Image.open(io.BytesIO(data_b[idx:]))
                             break
                         except: pass
@@ -289,33 +436,54 @@ def process_paq_file(file_bytes, filename):
             for m in ascii_matches: raw_texts.append(m.decode('ascii', errors='ignore').strip())
         except: continue
 
+    # ถ้าไม่มีเวลาจริงๆ ค่อยไปควานหาจาก Text (แต่ส่วนมากจะผ่านจาก ZLIB แล้ว)
+    if not real_start_dt:
+        for s in raw_texts:
+            if not date_found:
+                m_date = re.search(r'\b(20\d{2}[/-]\d{1,2}[/-]\d{1,2}|\d{1,2}[/-]\d{1,2}[/-]20\d{2})\b', s)
+                if m_date:
+                    try: 
+                        extracted_date = pd.to_datetime(m_date.group(1), errors='coerce').date()
+                        if pd.notna(extracted_date): date_found = True
+                    except: pass
+            m_time_ampm = re.search(r'\b(0?[1-9]|1[0-2]):([0-5]\d)(?::([0-5]\d))?\s*([AaPp][Mm])\b', s)
+            if m_time_ampm:
+                hr = int(m_time_ampm.group(1))
+                mn = int(m_time_ampm.group(2))
+                sc = int(m_time_ampm.group(3)) if m_time_ampm.group(3) else 0
+                ampm = m_time_ampm.group(4).upper()
+                extracted_time_str = f"{hr}:{mn:02d}:{sc:02d} {ampm}"
+                break
+            m_time_24h = re.search(r'\b([0-1]?\d|2[0-3]):([0-5]\d):([0-5]\d)\b', s)
+            if m_time_24h:
+                hr = int(m_time_24h.group(1))
+                mn = int(m_time_24h.group(2))
+                sc = int(m_time_24h.group(3))
+                ampm = "AM" if hr < 12 else "PM"
+                hr_12 = hr % 12
+                if hr_12 == 0: hr_12 = 12
+                extracted_time_str = f"{hr_12}:{mn:02d}:{sc:02d} {ampm}"
+                break
+
     channel_mapping = {}
     num_logger_channels = 0
     for s in raw_texts:
         matches = re.findall(r'#probe\s+number\s+#(\d+)\s*=\s*(\d+)', s, re.IGNORECASE)
-        for m in matches:
-            channel_mapping[int(m[0])] = int(m[1])
-            
+        for m in matches: channel_mapping[int(m[0])] = int(m[1])
         if num_logger_channels == 0:
             m_ch = re.search(r'#number of channels\s*=\s*(\d+)', s, re.IGNORECASE)
-            if m_ch:
-                num_logger_channels = int(m_ch.group(1))
-
-    if num_logger_channels == 0:
-        num_logger_channels = max(channel_mapping.values()) if channel_mapping else 10
-        
+            if m_ch: num_logger_channels = int(m_ch.group(1))
+    if num_logger_channels == 0: num_logger_channels = max(channel_mapping.values()) if channel_mapping else 10
     num_logger_channels = min(num_logger_channels, 10) 
 
     probe_streams = [s for s in ole.listdir() if len(s) >= 4 and s[0] == 'Paqfiles' and s[2] == 'ProbeResults']
     probe_streams = sorted(probe_streams, key=lambda x: x[-1])
-
     all_probes = {}
     for idx, stream_path in enumerate(probe_streams):
         stream_name = "/".join(stream_path)
         internal_idx = idx + 1
         physical_ch = channel_mapping.get(internal_idx, internal_idx)
         col_name = f"PB#{physical_ch}"
-        
         d = decompress_stream(ole, stream_name)
         if d:
             series = extract_probe_series_autonomously(d)
@@ -327,31 +495,21 @@ def process_paq_file(file_bytes, filename):
     aligned_probes = {k: (v + [np.nan] * (max_samples - len(v)) if len(v) < max_samples else v) for k, v in all_probes.items()}
     df_master = pd.DataFrame(aligned_probes)
     df_master.insert(0, "Time_Seconds", range(len(df_master)))
-    base_date = pd.Timestamp("1970-01-01 00:00:00")
-    df_master.insert(1, "Time_Stamp", base_date + pd.to_timedelta(df_master["Time_Seconds"], unit="s"))
+    base_date_ref = pd.Timestamp("1970-01-01 00:00:00")
+    df_master.insert(1, "Time_Stamp", base_date_ref + pd.to_timedelta(df_master["Time_Seconds"], unit="s"))
     df_master.insert(2, "Time_HHMMSS", df_master["Time_Stamp"].dt.strftime('%H:%M:%S'))
 
     expected_cols = [f"PB#{i}" for i in range(1, 11)]
     for col in expected_cols:
-        if col not in df_master.columns:
-            df_master[col] = np.nan
-
+        if col not in df_master.columns: df_master[col] = np.nan
     probe_cols = expected_cols
     invalid_cols = []
     
     for col in probe_cols:
         series = df_master[col].dropna()
-        if len(series) == 0:
-            invalid_cols.append(col)
-            continue
-        if len(series) < len(df_master) * 0.20:
-            invalid_cols.append(col)
-            df_master[col] = np.nan
-            continue
-        if series.max() < 100.0:
-            invalid_cols.append(col)
-            df_master[col] = np.nan
-            continue
+        if len(series) == 0: invalid_cols.append(col); continue
+        if len(series) < len(df_master) * 0.20: invalid_cols.append(col); df_master[col] = np.nan; continue
+        if series.max() < 100.0: invalid_cols.append(col); df_master[col] = np.nan; continue
             
     if not [c for c in probe_cols if c not in invalid_cols]: return None 
     
@@ -360,14 +518,12 @@ def process_paq_file(file_bytes, filename):
     for col in probe_cols:
         is_p60 = (df_master[col] >= 60.0)
         valid_p_mask = is_p60.copy()
-        for i in range(1, SUSTAINED_SECONDS):
-            valid_p_mask = valid_p_mask & is_p60.shift(-i, fill_value=False)
+        for i in range(1, SUSTAINED_SECONDS): valid_p_mask = valid_p_mask & is_p60.shift(-i, fill_value=False)
         probe_start_secs[col] = int(df_master[valid_p_mask].iloc[0]["Time_Seconds"]) if valid_p_mask.any() else 0
 
     valid_starts = [sec for sec in probe_start_secs.values() if sec > 0]
     detected_start_sec = min(valid_starts) if valid_starts else 0
-    if valid_starts:
-        first_probe_name = [k for k, v in probe_start_secs.items() if v == detected_start_sec][0]
+    if valid_starts: first_probe_name = [k for k, v in probe_start_secs.items() if v == detected_start_sec][0]
     else:
         valid_p = [c for c in probe_cols if c not in invalid_cols]
         first_probe_name = valid_p[0] if valid_p else probe_cols[0]
@@ -379,7 +535,6 @@ def process_paq_file(file_bytes, filename):
         if re.search(r'\\\\|\b[A-Z]:\\', s) or re.search(r'\.(ovn|prd|pro|rec|paq|jpg|png|bmp)\b', s, re.IGNORECASE) or re.search(r'\\Users\\|Desktop', s, re.IGNORECASE): continue
         s_clean = clean_paq_text(s)
         if not s_clean: continue
-
         is_probe = re.search(r'\b(cooler|drill&insert|inside H/D|manifold|core|PB#\d|Probe\s*no|Left\s*core|Right\s*core|Middle\s*core)\b', s_clean, re.IGNORECASE)
         is_note = re.search(r'\b(validation|product|new bar|WK\d|Loaded|Model|week\d|date\d|datapaq|spacer|gap|EVO|G100|Tahc)\b', s_clean, re.IGNORECASE)
         
@@ -402,9 +557,7 @@ def process_paq_file(file_bytes, filename):
                     if match_recipe_start:
                         note_part = s_rec[:match_recipe_start.start()].strip()
                         s_rec = s_rec[match_recipe_start.start():]
-                    else:
-                        note_part = s_rec 
-
+                    else: note_part = s_rec 
                 if note_part and note_part not in found_comments: found_comments.append(note_part)
                 
                 s_rec = re.sub(r'[\{\}\[\]\^\`\\]+', '', s_rec) 
@@ -472,7 +625,6 @@ def process_paq_file(file_bytes, filename):
 
     recipe_corpus = f"{process_settings} {clean_comments_text} {filename} {temp_combined_probes}"
 
-    # FURNACE IDENTIFICATION
     furnace_id, furnace_variant = "NB3", "NB3"
     if re.search(r'\bRAD\b', recipe_corpus, re.IGNORECASE): furnace_id, furnace_variant = "NB1", "NB1 (RAD)"
     elif re.search(r'\b(Utahc|UT)\b', recipe_corpus, re.IGNORECASE): furnace_id, furnace_variant = "NB2", "NB2 (Utahc)"
@@ -486,7 +638,7 @@ def process_paq_file(file_bytes, filename):
         if f_match: 
             found_num = next(g for g in f_match.groups() if g is not None)
             furnace_id = furnace_variant = f"NB{found_num}"
-            
+
     is_j4ll = bool(re.search(r'\b(J4LL)\b', recipe_corpus, re.IGNORECASE))
 
     if not (is_j4ll and "NB3 (KE8 : M2/EVO)" in furnace_variant):
@@ -719,64 +871,586 @@ def process_paq_file(file_bytes, filename):
         "filename": filename, "df_master": df_master, "probe_cols": probe_cols, "invalid_cols": invalid_cols, "furnace_id": furnace_id, "furnace_variant": furnace_variant, "cfg": cfg,
         "line_speed_mpm": line_speed_mpm, "detected_start_sec": detected_start_sec, "detected_start_hhmmss": detected_start_hhmmss, "first_probe_name": first_probe_name,
         "operator_name": operator_name, "company": company, "site": site, "operator_comment": clean_comments_text, "process_settings": process_settings,
-        "probe_locations": probe_locations, "probe_start_info": probe_start_info, "embedded_img": embedded_img
+        "probe_locations": probe_locations, "probe_start_info": probe_start_info, "embedded_img": embedded_img,
+        "extracted_date": extracted_date, "extracted_time": extracted_time_str
     }
 
 # ==============================================================================
-# STREAMLIT UI LAYOUT & MAIN APPLICATION
+# RECORDER: NB1/NB2 .DAD CONSTANTS & FUNCTIONS
 # ==============================================================================
-if "paq1_uploader_key" not in st.session_state:
-    st.session_state.paq1_uploader_key = 0
-if "paq2_uploader_key" not in st.session_state:
-    st.session_state.paq2_uploader_key = 0
+CH_NB1 = [
+    ('CH001', 'Top Z#1',       '°C'), ('CH002', 'Top Z#2',       '°C'),
+    ('CH003', 'Top Z#3',       '°C'), ('CH004', 'Top Z#4',       '°C'),
+    ('CH005', 'Top Z#5',       '°C'), ('CH006', 'Top Z#6',       '°C'),
+    ('CH007', 'Top Z#7',       '°C'), ('CH008', 'Bottom Z#1',    '°C'),
+    ('CH009', 'Bottom Z#2',    '°C'), ('CH010', 'Bottom Z#3',    '°C'),
+    ('CH011', 'Bottom Z#4',    '°C'), ('CH012', 'Bottom Z#5',    '°C'),
+    ('CH013', 'Bottom Z#6',    '°C'), ('CH014', 'Bottom Z#7',    '°C'),
+    ('CH015', 'EXIT O2',       'ppm'), ('CH019', 'ENTRANCE O2',   'ppm'),
+    ('CH016', 'Dryer #1',      '°C'), ('CH017', 'Dryer #2',      '°C'),
+    ('CH018', 'N2 .1',         'm3/hr'), ('CH020', 'DEW POINT',      'Cdp'),
+]
+
+CH_NB2 = [
+    ('CH001', 'Top Z#1',       '°C'), ('CH002', 'Top Z#2',       '°C'),
+    ('CH003', 'Top Z#3',       '°C'), ('CH004', 'Top Z#4',       '°C'),
+    ('CH005', 'Top Z#5',       '°C'), ('CH006', 'Top Z#6',       '°C'),
+    ('CH007', 'Top Z#7',       '°C'), ('CH008', 'Bottom Z#1',    '°C'),
+    ('CH009', 'Bottom Z#2',    '°C'), ('CH010', 'Bottom Z#3',    '°C'),
+    ('CH011', 'Bottom Z#4',    '°C'), ('CH012', 'Bottom Z#5',    '°C'),
+    ('CH013', 'Bottom Z#6',    '°C'), ('CH014', 'Bottom Z#7',    '°C'),
+    ('CH015', 'O2 EXIT',       'ppm'), ('CH018', 'O2 ENTRANCE',   'ppm'),
+    ('CH016', 'Dryer #1',      '°C'), ('CH017', 'Dryer #2',      '°C'),
+]
+
+COLORS_TOP = ['#FF0000', '#008000', '#0000FF', '#8A2BE2', '#A52A2A', '#FFA500', '#9ACD32']
+COLORS_BOT = ['#ADD8E6', '#FF69B4', '#808080', '#FF0000', '#008000', '#0000FF', '#8A2BE2']
+COLORS_DRY = {'CH016':'#FFA500', 'CH017':'#9ACD32'}
+COLORS_O2_NB1 = {'CH015':'#A52A2A', 'CH019':'#ADD8E6'}
+COLORS_O2_NB2 = {'CH015':'#A52A2A', 'CH018':'#ADD8E6'}
+COLORS_N2 = {'CH018': '#2E75B6'}
+COLORS_DEW = {'CH020': '#1D9E75'}
+
+def check_machine_type(filenames):
+    has_nb1 = False
+    has_nb2 = False
+    for f in filenames:
+        if 'DATA' in f.upper(): has_nb2 = True
+        else: has_nb1 = True
+    if has_nb1 and has_nb2: return 'MIXED', []
+    elif has_nb2: return 'NB2', CH_NB2
+    else: return 'NB1', CH_NB1
+
+def find_dad_params(raw):
+    if len(raw) < 5000: return None, None 
+    max_search = min(80000, len(raw) - 1000)
+    for offset in range(1000, max_search):
+        yr, mo, dy, hr, mn, sc = raw[offset:offset+6]
+        if 0 <= yr <= 99 and 1 <= mo <= 12 and 1 <= dy <= 31 and 0 <= hr <= 23 and 0 <= mn <= 59 and 0 <= sc <= 59:
+            try:
+                y_full = 2000 + yr if yr < 80 else 1900 + yr
+                t1 = datetime(y_full, mo, dy, hr, mn, sc)
+            except ValueError: continue
+            
+            for rs in range(16, 2048, 2): 
+                valid_chain = True
+                prev_t = t1
+                for step in range(1, 5):
+                    check_pos = offset + (rs * step)
+                    if check_pos + 6 >= len(raw):
+                        valid_chain = False; break
+                    y2, m2, d2, h2, min2, s2 = raw[check_pos:check_pos+6]
+                    if not (0 <= y2 <= 99 and 1 <= m2 <= 12 and 1 <= d2 <= 31 and 0 <= h2 <= 23 and 0 <= min2 <= 59 and 0 <= s2 <= 59):
+                        valid_chain = False; break
+                    try:
+                        y2_f = 2000 + y2 if y2 < 80 else 1900 + y2
+                        t2 = datetime(y2_f, m2, d2, h2, min2, s2)
+                        delta = (t2 - prev_t).total_seconds()
+                        if not (0 < delta <= 3600):
+                            valid_chain = False; break
+                        prev_t = t2
+                    except ValueError:
+                        valid_chain = False; break
+                if valid_chain:
+                    return offset, rs
+    return None, None 
+
+def parse_dad(raw: bytes, active_channels) -> list:
+    records = []
+    offset, record_size = find_dad_params(raw)
+    if offset is None or record_size is None:
+        return records 
+    bpc = 4 if record_size >= 70 else 2
+    body_len = len(raw) - offset
+    if body_len <= 0: return records
+    total = body_len // record_size
+    
+    for i in range(total):
+        base = offset + i * record_size
+        hdr  = raw[base:base+8]
+        if len(hdr) < 8: break
+        yr, mo, dy, hr, mn, sc = hdr[0], hdr[1], hdr[2], hdr[3], hdr[4], hdr[5]
+        
+        if not (0 <= yr <= 99 and 1 <= mo <= 12 and 1 <= dy <= 31 and 0 <= hr <= 23 and 0 <= mn <= 59 and 0 <= sc <= 59):
+            continue
+            
+        parsed_yr = (2000 + yr) if yr < 80 else (1900 + yr)
+        try:
+            ts = datetime(parsed_yr, mo, dy, hr, mn, sc)
+        except ValueError: continue
+            
+        rec = {'ts': ts}
+        for ch, name, unit in active_channels:
+            ch_idx = int(ch.replace('CH', '')) - 1
+            data_pos = base + 8 + (ch_idx * bpc)
+            
+            if data_pos + 2 > base + record_size: 
+                rec[f'{ch}_min'] = rec[f'{ch}_max'] = rec[f'{ch}_avg'] = rec[ch] = None
+                continue
+            
+            v1 = struct.unpack_from('>h', raw, data_pos)[0]
+            if bpc == 4 and data_pos + 4 <= base + record_size:
+                v2 = struct.unpack_from('>h', raw, data_pos + 2)[0]
+                min_v, max_v = min(v1, v2), max(v1, v2)
+            else:
+                min_v = max_v = v1
+            
+            divisor = 1.0 if name == 'N2 .1' else 10.0
+            if v1 not in (-32768, -32767, 32767, 32766) and (-32000 < v1 < 32000):
+                min_val = min_v / divisor
+                max_val = max_v / divisor
+                if -1000.0 <= min_val <= 10000.0 and -1000.0 <= max_val <= 10000.0:
+                    rec[f'{ch}_min'] = round(min_val, 1)
+                    rec[f'{ch}_max'] = round(max_val, 1)
+                    rec[f'{ch}_avg'] = round((min_val + max_val) / 2.0, 1)
+                    rec[ch] = rec[f'{ch}_avg']
+                else: rec[f'{ch}_min'] = rec[f'{ch}_max'] = rec[f'{ch}_avg'] = rec[ch] = None
+            else: rec[f'{ch}_min'] = rec[f'{ch}_max'] = rec[f'{ch}_avg'] = rec[ch] = None
+        records.append(rec)
+    return records
+
+@st.cache_data(show_spinner=False)
+def process_dad_files(files_d, mode_k, act_channels):
+    all_records = []
+    for fname, raw in files_d:
+        recs = parse_dad(raw, act_channels)
+        if len(recs) > 10: all_records.extend(recs[3:-2])
+        else: all_records.extend(recs)
+    if not all_records: return []
+    all_records.sort(key=lambda x: x['ts'])
+    if len(all_records) > 0:
+        streaks = []
+        current_streak = [all_records[0]]
+        for i in range(1, len(all_records)):
+            if (all_records[i]['ts'] - all_records[i-1]['ts']).total_seconds() <= 86400 * 2:
+                current_streak.append(all_records[i])
+            else:
+                streaks.append(current_streak)
+                current_streak = [all_records[i]]
+        streaks.append(current_streak)
+        all_records = max(streaks, key=len)
+    seen = set()
+    unique = []
+    for r in all_records:
+        k = r['ts']
+        if k not in seen:
+            seen.add(k)
+            new_r = {'ts': k}
+            for ch,_,_ in act_channels: new_r[ch] = r.get(f'{ch}{mode_k}')
+            unique.append(new_r)
+    df = pd.DataFrame(unique)
+    if not df.empty:
+        df.set_index('ts', inplace=True)
+        for col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+            df[col] = df[col].rolling(window=3, min_periods=1, center=True).median()
+        df = df.reset_index()
+        unique = df.where(pd.notnull(df), None).to_dict('records')
+    return unique
+
+# ==============================================================================
+# RECORDER: NB1 DEBINDER .CSV CONSTANTS & FUNCTIONS
+# ==============================================================================
+def parse_debinder_csv(file_path_or_buffer):
+    try:
+        if isinstance(file_path_or_buffer, str):
+            with open(file_path_or_buffer, "r", encoding="utf-8", errors="ignore") as f:
+                raw_bytes = f.read().encode("utf-8")
+        else:
+            file_path_or_buffer.seek(0)
+            raw_bytes = file_path_or_buffer.read()
+
+        text_content = None
+        for enc in ['cp932', 'shift_jis', 'utf-8', 'tis-620', 'latin1']:
+            try:
+                text_content = raw_bytes.decode(enc)
+                break
+            except Exception: continue
+        if text_content is None: text_content = raw_bytes.decode('utf-8', errors='ignore')
+        
+        text_upper = text_content.upper()
+        
+        is_debinder_file = False
+        if "COMBUS" in text_upper or "DEBINDER" in text_upper:
+            is_debinder_file = True
+            
+        is_nb3_file = False
+        if "#ENDHEADER" in text_upper:
+            is_nb3_file = True
+            
+        if is_debinder_file:
+            is_nb3_file = False
+            
+        if is_nb3_file:
+            return None
+            
+        lines = text_content.splitlines()
+        parsed_rows = []
+        
+        for line in lines:
+            line_str = line.strip()
+            if "," in line_str:
+                parts = [p.strip() for p in line_str.split(",")]
+                if len(parts) >= 6 and re.search(r'\d', parts[0]):
+                    try:
+                        dt_val = parts[0].replace('"', '')
+                        
+                        if len(parts) >= 17:
+                            z1 = float(parts[2].replace('"', ''))
+                            z2 = float(parts[5].replace('"', ''))
+                            z3 = float(parts[8].replace('"', ''))
+                            z4 = float(parts[11].replace('"', ''))
+                            comb = float(parts[14].replace('"', ''))
+                        else:
+                            z1 = float(parts[1].replace('"', ''))
+                            z2 = float(parts[2].replace('"', ''))
+                            z3 = float(parts[3].replace('"', ''))
+                            z4 = float(parts[4].replace('"', ''))
+                            comb = float(parts[5].replace('"', ''))
+                            
+                        parsed_rows.append({
+                            "DateTime": dt_val, 
+                            "Zone #1": z1, 
+                            "Zone #2": z2, 
+                            "Zone #3": z3, 
+                            "Zone #4": z4, 
+                            "Combustion Air Temp": comb
+                        })
+                    except ValueError: 
+                        continue
+        
+        if not parsed_rows: return pd.DataFrame()
+        
+        df = pd.DataFrame(parsed_rows)
+        df["DateTime"] = pd.to_datetime(df["DateTime"], errors="coerce")
+        return df.dropna(subset=["DateTime"]).reset_index(drop=True)
+    except Exception as e:
+        return pd.DataFrame()
+
+def process_debinder_files(uploaded_files, expected_furnace=None):
+    combined_dfs = []
+    invalid_files = []
+    for file in uploaded_files:
+        df_single = parse_debinder_csv(file)
+        if df_single is None or df_single.empty: 
+            invalid_files.append(file.name)
+        else: 
+            combined_dfs.append(df_single)
+        
+    if invalid_files:
+        if expected_furnace:
+            st.error(f"❌ **ไฟล์ไม่ถูกต้อง!** ตรวจพบไฟล์ที่ไม่ใช่ข้อมูล Debinder ของเตา {expected_furnace}: {', '.join(invalid_files)}\n\nกรุณากดปุ่ม Clear Data และอัปโหลดไฟล์ให้ตรงกับเตาหลัก")
+        else:
+            st.error(f"❌ **ไฟล์ไม่ถูกต้อง!** ตรวจพบไฟล์ที่ไม่ใช่รูปแบบของ NB1 Debinder CSV: {', '.join(invalid_files)}\n\n(คุณอาจเผลออัปโหลดไฟล์ของ NB3 หรือไฟล์ผิดประเภท) กรุณากดปุ่ม Clear Data ขวามือ แล้วเลือกอัปโหลดไฟล์ให้ตรงกับประเภทที่เลือกไว้")
+        st.stop()
+        
+    if not combined_dfs: return pd.DataFrame()
+    full_df = pd.concat(combined_dfs, ignore_index=True)
+    full_df = full_df.drop_duplicates(subset=["DateTime"]).sort_values("DateTime").reset_index(drop=True)
+    return full_df
+
+def extract_csv_start_time(df, condition_cols, threshold=60.0, sustained_duration=5):
+    """
+    Extract the start time from a DataFrame based on a temperature threshold.
+    """
+    if df is None or df.empty or not condition_cols:
+        return None
+        
+    # Check if any specified column is >= threshold
+    condition = df[condition_cols].ge(threshold).any(axis=1)
+    
+    # Calculate rolling sum to find sustained periods
+    rolling_sum = condition.rolling(window=sustained_duration, min_periods=sustained_duration).sum()
+    
+    # Find the first index where the rolling sum equals sustained_duration
+    start_indices = rolling_sum[rolling_sum == sustained_duration].index
+    
+    if len(start_indices) > 0:
+        first_sustained_idx = start_indices[0] - (sustained_duration - 1)
+        start_datetime = df.loc[first_sustained_idx, "DateTime"]
+        return start_datetime
+    return None
+
+# ==============================================================================
+# RECORDER: NB3 FURNACE .CSV CONSTANTS & FUNCTIONS
+# ==============================================================================
+def parse_nb3_csv(uploaded_file):
+    uploaded_file.seek(0)
+    raw_bytes = uploaded_file.read()
+    text_content = None
+    encodings = ['cp932', 'shift_jis', 'utf-8-sig', 'utf-8', 'tis-620', 'latin1']
+    for enc in encodings:
+        try:
+            text_content = raw_bytes.decode(enc)
+            break
+        except UnicodeDecodeError: continue
+    if text_content is None: text_content = raw_bytes.decode('utf-8', errors='ignore')
+    
+    lines = text_content.splitlines()
+    endheader_cols = []
+    for line in lines[:150]:
+        line_str = line.strip()
+        if line_str.startswith("#EndHeader"):
+            endheader_cols = [x.strip() for x in line_str.split(",")]
+            break
+            
+    header_str = " ".join(endheader_cols) if endheader_cols else text_content[:10000]
+    
+    has_top_z6_z7 = bool(re.search(r'1\)TH_CH6', header_str, re.I)) and bool(re.search(r'1\)TH_CH7', header_str, re.I))
+    has_bot_z6_z7 = bool(re.search(r'2\)TH_CH6', header_str, re.I)) and bool(re.search(r'2\)TH_CH7', header_str, re.I))
+    if not (has_top_z6_z7 or has_bot_z6_z7): return None
+
+    data_rows = []
+    date_regex = re.compile(r'^\d{1,4}[-/]\d{1,2}[-/]\d{1,4}')
+    time_regex = re.compile(r'^\d{1,2}:\d{2}:\d{2}')
+    curr_date = ""
+    for line in lines:
+        line_str = line.strip()
+        if not line_str or line_str.startswith("#EndHeader"): continue
+        if date_regex.match(line_str) and "," not in line_str:
+            curr_date = line_str
+            continue
+        parts = [p.strip() for p in line_str.split(",")]
+        if date_regex.search(parts[0]): data_rows.append(parts)
+        elif time_regex.search(parts[0]):
+            dt_str = f"{curr_date} {parts[0]}".strip() if curr_date else parts[0]
+            data_rows.append([dt_str] + parts[1:])
+            
+    if not data_rows: return pd.DataFrame()
+    data_df = pd.DataFrame(data_rows)
+
+    def find_col_by_keyword(key_pattern):
+        if endheader_cols:
+            for c_idx, name in enumerate(endheader_cols):
+                if re.search(key_pattern, name, re.IGNORECASE): return c_idx
+        return None
+
+    df = pd.DataFrame()
+    col0_str = data_df[0].astype(str).str.strip()
+    df["DateTime"] = pd.to_datetime(col0_str, errors="coerce", dayfirst=True)
+    
+    def extract_series(col_idx, fallback_idx, min_val=-200.0, max_val=10000.0):
+        target_idx = col_idx if col_idx is not None else fallback_idx
+        if target_idx is not None and target_idx < data_df.shape[1]:
+            s = pd.to_numeric(data_df[target_idx], errors="coerce")
+            s = s.apply(lambda x: x if (pd.notna(x) and min_val <= x <= max_val) else None)
+            return s
+        return pd.Series([None] * len(data_df))
+
+    for i in range(1, 8):
+        c = find_col_by_keyword(rf'1\)TH_CH{i}Max')
+        df[f"Top Zone #{i}"] = extract_series(c, 2 + (i - 1) * 3, min_val=0.0, max_val=1200.0)
+    for i in range(1, 8):
+        c = find_col_by_keyword(rf'2\)TH_CH{i}Max')
+        df[f"Bottom Zone #{i}"] = extract_series(c, 2 + (7 + i - 1) * 3, min_val=0.0, max_val=1200.0)
+        
+    dryoff_names = ["DRYOFF1", "DRYOFF2", "DRYOFF3"]
+    for i in range(1, 4):
+        c = find_col_by_keyword(rf'3\)TH_CH{i}Max')
+        df[dryoff_names[i-1]] = extract_series(c, 2 + (14 + i - 1) * 3, min_val=0.0, max_val=1000.0)
+        
+    df["Oxygen EXIT"] = extract_series(find_col_by_keyword(r'3\)TH_CH4Max'), 2 + (17) * 3, min_val=0.0, max_val=2000.0)
+    df["Oxygen ENTRANCE"] = extract_series(find_col_by_keyword(r'3\)TH_CH5Max'), 2 + (18) * 3, min_val=0.0, max_val=2000.0)
+    df["N2 Exit"] = extract_series(find_col_by_keyword(r'3\)TH_CH7Max'), 2 + (20) * 3, min_val=0.0, max_val=20000.0)
+    df["N2 Entrance"] = extract_series(find_col_by_keyword(r'3\)TH_CH8Max'), 2 + (21) * 3, min_val=0.0, max_val=20000.0)
+    df["COOL WATER TEMP"] = extract_series(find_col_by_keyword(r'3\)TH_CH6Max'), 2 + (19) * 3, min_val=-200.0, max_val=1000.0)
+
+    return df.dropna(subset=["DateTime"]).reset_index(drop=True)
+
+def process_nb3_files(uploaded_files, expected_furnace=None):
+    combined_dfs = []
+    invalid_files = []
+    for file in uploaded_files:
+        single_df = parse_nb3_csv(file)
+        if single_df is None or single_df.empty: 
+            invalid_files.append(file.name)
+        else: 
+            combined_dfs.append(single_df)
+        
+    if invalid_files:
+        if expected_furnace:
+            st.error(f"❌ **ไฟล์ไม่ถูกต้อง!** ตรวจพบไฟล์ที่ไม่ใช่ข้อมูลของเตา {expected_furnace}: {', '.join(invalid_files)}\n\nกรุณากดปุ่ม Clear Data และอัปโหลดไฟล์ให้ตรงกับเตาหลัก")
+        else:
+            st.error(f"❌ **ไฟล์ไม่ถูกต้อง!** ตรวจพบไฟล์ที่ไม่ใช่รูปแบบของ RECORDER NB3: {', '.join(invalid_files)}\n\n(คุณอาจเผลออัปโหลดไฟล์ของ NB1 Debinder) กรุณากดปุ่ม Clear Data ขวามือ แล้วเลือกอัปโหลดไฟล์ให้ตรงกับประเภทที่เลือกไว้")
+        st.stop()
+        
+    if not combined_dfs: return pd.DataFrame()
+    full_df = pd.concat(combined_dfs, ignore_index=True)
+    full_df = full_df.drop_duplicates(subset=["DateTime"]).sort_values("DateTime").reset_index(drop=True)
+    return full_df
+
+# ==============================================================================
+# RECORDER CHART RENDERING UTILITIES
+# ==============================================================================
+def render_single_chart(data, ch_list, colors_ref, title, y_range, y_title, hline=None):
+    if not ch_list: return None
+    fig = go.Figure()
+    ts = [r['ts'] for r in data]
+    for i, (ch, name, unit) in enumerate(ch_list):
+        color = colors_ref[i] if isinstance(colors_ref, list) else colors_ref.get(ch, '#888')
+        fig.add_trace(go.Scatter(x=ts, y=[r.get(ch) for r in data], name=name, mode='lines', line=dict(color=color, width=1.5), hovertemplate=f'<b>{name}</b>: %{{y:.1f}} {unit}<extra></extra>' if unit else f'<b>{name}</b>: %{{y:.1f}}<extra></extra>'))
+    if hline is not None:
+        fig.add_hline(y=hline, line_dash="dash", line_color="#FF4B4B", line_width=1.5, annotation_text=f"Standard {hline} {y_title}", annotation_position="bottom right", annotation_font=dict(color="#FF4B4B", size=12))
+    fig.update_layout(title=dict(text=title, font=dict(size=18, weight="bold")), height=450, hovermode='x unified', hoverlabel=dict(font_size=12, namelength=30), legend=dict(title="Channels", orientation="v", yanchor="middle", y=0.5, xanchor="left", x=1.02, font=dict(size=12), itemsizing='constant'), margin=dict(l=60, r=150, t=60, b=40))
+    if y_range: fig.update_layout(yaxis=dict(range=y_range, title_text=y_title, title_font=dict(size=14)))
+    else: fig.update_layout(yaxis=dict(title_text=y_title, title_font=dict(size=14)))
+    fig.update_xaxes(tickformat='%d/%m\n%H:%M', tickfont=dict(size=11), showticklabels=True)
+    return fig
+
+def render_dual_axis_chart(data, ch_left, ch_right, colors_left, colors_right, title, y1_range, y1_title, y2_title, hline_left=None, y2_range=None):
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+    ts = [r['ts'] for r in data]
+    for i, (ch, name, unit) in enumerate(ch_left):
+        color = colors_left[i] if isinstance(colors_left, list) else colors_left.get(ch, '#888')
+        fig.add_trace(go.Scatter(x=ts, y=[r.get(ch) for r in data], name=name, mode='lines', line=dict(color=color, width=1.5), hovertemplate=f'<b>{name}</b>: %{{y:.1f}} {unit}<extra></extra>' if unit else f'<b>{name}</b>: %{{y:.1f}}<extra></extra>'), secondary_y=False)
+    for i, (ch, name, unit) in enumerate(ch_right):
+        color = colors_right[i] if isinstance(colors_right, list) else colors_right.get(ch, '#888')
+        fig.add_trace(go.Scatter(x=ts, y=[r.get(ch) for r in data], name=name, mode='lines', line=dict(color=color, width=1.5, dash='dot'), hovertemplate=f'<b>{name}</b>: %{{y:.0f}} {unit}<extra></extra>' if unit else f'<b>{name}</b>: %{{y:.0f}}<extra></extra>'), secondary_y=True)
+    if hline_left is not None:
+        fig.add_hline(y=hline_left, line_dash="dash", line_color="#FF4B4B", line_width=1.5, annotation_text=f"Standard {hline_left} {y1_title.split()[0]}", annotation_position="bottom right", annotation_font=dict(color="#FF4B4B", size=12), secondary_y=False)
+    fig.update_layout(title=dict(text=title, font=dict(size=18, weight="bold")), height=450, hovermode='x unified', hoverlabel=dict(font_size=12, namelength=30), legend=dict(title="Channels", orientation="v", yanchor="middle", y=0.5, xanchor="left", x=1.08, font=dict(size=12), itemsizing='constant'), margin=dict(l=60, r=180, t=60, b=40))
+    if y1_range: fig.update_layout(yaxis=dict(range=y1_range, title_text=y1_title, title_font=dict(size=14)))
+    if y2_range: fig.update_layout(yaxis2=dict(range=y2_range, title_text=y2_title, title_font=dict(size=14), showgrid=False))
+    fig.update_xaxes(tickformat='%d/%m\n%H:%M', tickfont=dict(size=11), showticklabels=True)
+    return fig
+
+def apply_industrial_style(fig, y_title, y_range=None, is_dual_axis=False):
+    layout_args = dict(
+        hovermode="x unified", showlegend=True,
+        legend=dict(orientation="v", yanchor="top", y=1, xanchor="left", x=1.02),
+        xaxis=dict(title=dict(text="Date & Time"), showgrid=True, type="date"),
+        yaxis=dict(title=dict(text=y_title), showgrid=True, zeroline=False),
+        height=450, margin=dict(l=60, r=180, t=30, b=40),
+    )
+    if y_range and not is_dual_axis: layout_args["yaxis"]["range"] = y_range
+    fig.update_layout(**layout_args)
+
+def add_paq_overlay(fig, df_paq, probe_cols, invalid_cols, is_dual_axis=False):
+    for col in probe_cols:
+        if col not in invalid_cols:
+            trace = go.Scatter(
+                x=df_paq["Sync_DateTime"], 
+                y=df_paq[col], 
+                name=f"PAQ: {col}", 
+                mode="lines", 
+                line=dict(color=PROBE_COLORS.get(col, "#ffffff"), width=2.5),
+                opacity=0.9
+            )
+            if is_dual_axis:
+                fig.add_trace(trace, secondary_y=False)
+            else:
+                fig.add_trace(trace)
+    return fig
+
+def add_zone_backgrounds(fig, zones, paq_start_dt, detected_start_sec, line_speed_mpm):
+    if line_speed_mpm <= 0: return fig
+    for z in zones:
+        z_color = GROUP_COLORS.get(z["group"], "rgba(200, 200, 200, 0.2)")
+        z_start_sec = detected_start_sec + (z["start"] / line_speed_mpm) * 60
+        z_end_sec = detected_start_sec + ((z["start"] + z["length"]) / line_speed_mpm) * 60
+        
+        z_start_time = paq_start_dt + pd.to_timedelta(z_start_sec, unit="s")
+        z_end_time = paq_start_dt + pd.to_timedelta(z_end_sec, unit="s")
+        
+        fig.add_vrect(
+            x0=z_start_time, x1=z_end_time, 
+            fillcolor=z_color, layer="below", line_width=0.5, 
+            line_dash="dot", line_color="rgba(120, 120, 120, 0.4)", 
+            annotation_text=f"{z['num']}.{z['name']}", 
+            annotation_position="top left", 
+            annotation=dict(font_size=9, font_color="#a0aab2", textangle=-90)
+        )
+    return fig
+
+def render_combined_charts_vertically(charts_list, zoom_mode_selection, zoom_range, key_prefix):
+    if not charts_list: return
+    for i, c in enumerate(charts_list):
+        st.markdown(f"#### {c['title']}")
+        fig = c["fig"]
+        if zoom_mode_selection == "ซูมอัตโนมัติทุกกราฟ (Auto-Zoom All)":
+            fig.update_xaxes(range=zoom_range)
+        st.plotly_chart(fig, use_container_width=True)
+        st.markdown("---")
+
+def to_excel_bytes(dataframe):
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df_export = dataframe.copy()
+        for col in df_export.select_dtypes(include=['datetime64[ns, UTC]', 'datetime64[ns]']).columns:
+            df_export[col] = df_export[col].dt.strftime('%Y-%m-%d %H:%M:%S')
+        df_export.to_excel(writer, index=False)
+    output.seek(0)
+    return output.getvalue()
+
+# ==============================================================================
+# STREAMLIT UI MAIN LAYOUT
+# ==============================================================================
+if "paq1_uploader_key" not in st.session_state: st.session_state.paq1_uploader_key = 0
+if "paq2_uploader_key" not in st.session_state: st.session_state.paq2_uploader_key = 0
+if "recorder_uploader_key" not in st.session_state: st.session_state.recorder_uploader_key = 0
 
 st.title("🔥 Datapaq .PAQ Furnace Profiler & Analyzer")
 st.markdown("Automated thermal profile extraction, zone metrics, and multi-file comparison.")
 
 with st.sidebar:
-    st.header("📁 File Upload")
-    
+    st.header("📁 1. Upload PAQ File")
     if st.button("🔄 Reset / Clear Data"):
         st.cache_data.clear()
         st.session_state.paq1_uploader_key += 1
         st.session_state.paq2_uploader_key += 1
+        st.session_state.recorder_uploader_key += 1
         st.rerun()
-        
     uploaded_file1 = st.file_uploader("Upload Main .PAQ File", type=["paq"], key=f"paq1_{st.session_state.paq1_uploader_key}")
 
-if not uploaded_file1:
-    st.info("👈 Please upload a `.paq` binary file using the sidebar to begin analysis.")
-else:
-    data1 = process_paq_file(uploaded_file1.getvalue(), uploaded_file1.name)
+    # ใช้งานตัวแปร data1 เพื่อหลีกเลี่ยง NameError เมื่อเข้าสู่โหมดต่างๆ
+    data1 = None
+    if uploaded_file1:
+        data1 = process_paq_file(uploaded_file1.getvalue(), uploaded_file1.name)
+        if not data1:
+            st.error("❌ Failed to parse valid probe temperature streams from the uploaded file.")
+
+# ==============================================================================
+# TABS DECLARATION
+# ==============================================================================
+tabs = st.tabs([
+    "📊 Profile Graphs & Analysis", 
+    "⚖ Compare Files", 
+    "🔗 Recorder Data (Standalone / Combine)"
+])
+
+# ---------------------------------------------------------
+# TAB 0: PROFILE GRAPHS & ANALYSIS (ALL-IN-ONE)
+# ---------------------------------------------------------
+with tabs[0]:
     if not data1:
-        st.error("❌ Failed to parse valid probe temperature streams from the uploaded file.")
-        st.stop()
+        st.markdown('<div class="custom-warning-box">⚠️ <b>กรุณาอัปโหลดไฟล์หลัก (.PAQ) ที่แถบด้านซ้ายมือก่อน!</b> ระบบจำเป็นต้องใช้ข้อมูลเพื่อแสดงผลกราฟและวิเคราะห์ครับ</div>', unsafe_allow_html=True)
+    else:
+        df_m1, f_variant, cfg = data1["df_master"], data1["furnace_variant"], data1["cfg"]
+        zones, probe_cols, invalid_cols = data1["cfg"]["zones"], data1["probe_cols"], data1["invalid_cols"]
+        total_furnace_length = zones[-1]["start"] + zones[-1]["length"] if zones else 0
+        furnace_duration_mins = total_furnace_length / data1['line_speed_mpm'] if data1['line_speed_mpm'] else 0
+        furnace_duration_secs = int(furnace_duration_mins * 60)
+        furnace_id = data1["furnace_id"]
 
-    df_m1, f_variant, cfg, zones, probe_cols, invalid_cols = data1["df_master"], data1["furnace_variant"], data1["cfg"], data1["cfg"]["zones"], data1["probe_cols"], data1["invalid_cols"]
-    total_furnace_length = zones[-1]["start"] + zones[-1]["length"]
-    furnace_duration_mins = total_furnace_length / data1['line_speed_mpm']
-    furnace_duration_secs = int(furnace_duration_mins * 60)
+        st.success(f"✓ File Loaded Successfully: **{data1['filename']}**")
+        m_col1, m_col2, m_col3, m_col4 = st.columns(4)
+        m_col1.metric("Confirmed Furnace", f_variant)
+        m_col2.metric("Conveyor Speed", f"{data1['line_speed_mpm']:.3f} m/min")
+        m_col3.metric("Entry Time", f"{data1['detected_start_hhmmss']}")
+        
+        process_hh = furnace_duration_secs // 3600
+        process_mm = (furnace_duration_secs % 3600) // 60
+        process_ss = furnace_duration_secs % 60
+        process_time_str = f"{int(process_hh):02d}:{int(process_mm):02d}:{int(process_ss):02d}"
+        m_col4.metric("Process PAQ Time", process_time_str)
 
-    st.success(f"✓ File Loaded Successfully: **{data1['filename']}**")
-    m_col1, m_col2, m_col3 = st.columns(3)
-    m_col1.metric("Confirmed Furnace", f_variant)
-    m_col2.metric("Conveyor Speed", f"{data1['line_speed_mpm']:.3f} m/min")
-    m_col3.metric("Time in Furnace", f"{furnace_duration_secs}s (~{furnace_duration_mins:.1f} min)")
-
-    tabs = st.tabs(["📊 Profile Graphs", "🏭 Zone & Stage Summary", "📈 Statistics & Boxplots", "💾 Data Export & Download", "⚖ Compare Files"])
-
-    with tabs[0]:
         st.subheader("Global Furnace Profile")
         fig1 = go.Figure()
-        
         base_date = pd.Timestamp("1970-01-01 00:00:00")
-        
         d_max_view = total_furnace_length + 1.0 
-        t_max_view = data1['detected_start_sec'] + (d_max_view / data1['line_speed_mpm'] * 60)
-        
+        t_max_view = data1['detected_start_sec'] + (d_max_view / data1['line_speed_mpm'] * 60) if data1['line_speed_mpm'] else 0
         t_min = df_m1["Time_Seconds"].min()
         t_max = min(df_m1["Time_Seconds"].max(), t_max_view)
-        
         d_min = df_m1["Distance_Meters"].min()
         d_max = min(df_m1["Distance_Meters"].max(), d_max_view)
 
@@ -803,12 +1477,12 @@ else:
         fig1.add_trace(go.Scatter(x=df_m1["Distance_Meters"], y=df_m1[probe_cols[0]] * 0, showlegend=False, opacity=0, xaxis="x2", hoverinfo='skip'))
         st.plotly_chart(fig1, use_container_width=True)
         st.markdown("---")
-        
-        stages = cfg["stages"]
+
+        stages = cfg.get("stages", [])
         has_debinder = any(s["Stage"] == "Debinder" for s in stages)
-        dryer_info = next((s for s in stages if s["Stage"] == "Dryer"), stages[0])
+        dryer_info = next((s for s in stages if s["Stage"] == "Dryer"), stages[0] if stages else None)
         debinder_info = next((s for s in stages if s["Stage"] == "Debinder"), None) if has_debinder else None
-        brazing_info = next((s for s in stages if s["Stage"] == "Brazing"), stages[-1])
+        brazing_info = next((s for s in stages if s["Stage"] == "Brazing"), stages[-1] if stages else None)
 
         process_time = df_m1["Time_Seconds"] - data1["detected_start_sec"]
         
@@ -825,51 +1499,45 @@ else:
             dryer_dwell_df = dryer_max_df.copy()
             debinder_df = df_m1[(df_m1["Distance_Meters"] >= debinder_info["Start (m)"]) & (df_m1["Distance_Meters"] <= debinder_info["End (m)"])] if debinder_info else None
         else:
-            dryer_max_df = df_m1[(df_m1["Distance_Meters"] >= dryer_info["Start (m)"]) & (df_m1["Distance_Meters"] <= dryer_info["End (m)"])]
+            dryer_max_df = df_m1[(df_m1["Distance_Meters"] >= dryer_info["Start (m)"]) & (df_m1["Distance_Meters"] <= dryer_info["End (m)"])] if dryer_info else pd.DataFrame()
             dryer_dwell_df = dryer_max_df.copy()
             debinder_df = df_m1[(df_m1["Distance_Meters"] >= debinder_info["Start (m)"]) & (df_m1["Distance_Meters"] <= debinder_info["End (m)"])] if debinder_info else None
             
-        brazing_df = df_m1[(df_m1["Distance_Meters"] >= brazing_info["Start (m)"]) & (df_m1["Distance_Meters"] <= brazing_info["End (m)"])]
+        brazing_df = df_m1[(df_m1["Distance_Meters"] >= brazing_info["Start (m)"]) & (df_m1["Distance_Meters"] <= brazing_info["End (m)"])] if brazing_info else pd.DataFrame()
 
         matrix_rows = []
         for col in probe_cols:
             if col in invalid_cols:
                 r = {"Probe": col}
-                
                 r["Brazing Max (°C)"] = "***"
                 for bt in [cfg.get(f"brazing_dwell_thresh_{i}") for i in range(1, 5)]:
                     if bt is not None: r[f"Brazing Dwell (≥{int(bt)}°C)"] = "***"
-                    
                 if has_debinder and debinder_df is not None:
                     d_thresh = cfg.get("debinder_dwell_thresh", 300.0) or 300.0
                     r["Debinder Max (°C)"] = "***"
                     r[f"Debinder Dwell (≥{int(d_thresh)}°C)"] = "***"
-                    
                 r["Dryer Max (°C)"] = "***"
                 for dt in [cfg.get("dryer_dwell_thresh_1"), cfg.get("dryer_dwell_thresh_2")]:
                     if dt is not None: r[f"Dryer Dwell (≥{int(dt)}°C)"] = "***"
-                    
                 matrix_rows.append(r)
                 continue
 
             r = {"Probe": col}
-            
-            bz_max = brazing_df[col].max()
-            r["Brazing Max (°C)"] = f"{bz_max:.1f}" if not brazing_df.empty and pd.notna(bz_max) else "N/A"
+            bz_max = brazing_df[col].max() if not brazing_df.empty else np.nan
+            r["Brazing Max (°C)"] = f"{bz_max:.1f}" if pd.notna(bz_max) else "N/A"
             for bt in [cfg.get(f"brazing_dwell_thresh_{i}") for i in range(1, 5)]:
                 if bt is not None: r[f"Brazing Dwell (≥{int(bt)}°C)"] = format_dwell_time((brazing_df[col] >= bt).sum()) if not brazing_df.empty else "00:00:00"
 
             if has_debinder and debinder_df is not None:
                 d_thresh = cfg.get("debinder_dwell_thresh", 300.0) or 300.0
                 db_max = debinder_df[col].max()
-                r["Debinder Max (°C)"] = f"{db_max:.1f}" if not debinder_df.empty and pd.notna(db_max) else "N/A"
+                r["Debinder Max (°C)"] = f"{db_max:.1f}" if pd.notna(db_max) else "N/A"
                 r[f"Debinder Dwell (≥{int(d_thresh)}°C)"] = format_dwell_time((debinder_df[col] >= d_thresh).sum()) if not debinder_df.empty else "00:00:00"
 
-            d_max = dryer_max_df[col].max()
-            r["Dryer Max (°C)"] = f"{d_max:.1f}" if not dryer_max_df.empty and pd.notna(d_max) else "N/A"
+            d_max = dryer_max_df[col].max() if not dryer_max_df.empty else np.nan
+            r["Dryer Max (°C)"] = f"{d_max:.1f}" if pd.notna(d_max) else "N/A"
             for dt in [cfg.get("dryer_dwell_thresh_1"), cfg.get("dryer_dwell_thresh_2")]:
                 if dt is not None: r[f"Dryer Dwell (≥{int(dt)}°C)"] = format_dwell_time((dryer_dwell_df[col] >= dt).sum()) if not dryer_dwell_df.empty else "00:00:00"
-                
             matrix_rows.append(r)
             
         if f_variant == "NB1 (RAD)":
@@ -877,7 +1545,6 @@ else:
             matrix_rows = sorted(matrix_rows, key=lambda x: desired_order.index(x["Probe"]) if x["Probe"] in desired_order else 99)
 
         st.subheader(f"⏱ Inspection Matrix — {f_variant}")
-        
         std_info = STANDARD_SPECS.get(f_variant)
         if std_info:
             st.markdown(f"""
@@ -898,29 +1565,22 @@ else:
 
         matrix_placeholder = st.empty()
         check_dryer = st.checkbox("🔍 ตรวจสอบเกณฑ์ Dryer Max Temp & Dwell Time / Evaluate Dryer Max & Dwell", value=False)
-
         df_matrix = pd.DataFrame(matrix_rows)
-        matrix_placeholder.dataframe(
-            df_matrix.style.apply(style_inspection_matrix, variant=f_variant, check_dryer_max=check_dryer, axis=1), 
-            use_container_width=True, hide_index=True
-        )
+        matrix_placeholder.dataframe(df_matrix.style.apply(style_inspection_matrix, variant=f_variant, check_dryer_max=check_dryer, axis=1), use_container_width=True, hide_index=True)
         
         overall_pass = True
         failed_points = []
         val_rules = VALIDATION_RULES.get(f_variant, {})
-        
         for r in matrix_rows:
             probe = r["Probe"]
             if probe in invalid_cols: continue
             for k, v in r.items():
                 if k == "Probe": continue
                 if not check_dryer and ("Dryer Max" in k or "Dryer Dwell" in k): continue 
-                
                 rule = val_rules.get(k)
                 if f_variant == "NB1 (CDS/KN9/12SHP)" and k == "Brazing Dwell (≥577°C)":
                     if probe in ["PB#1", "PB#5"]: rule = (240, 465)
                     else: rule = (120, 465)
-                
                 if not rule: continue
                 is_fail = False
                 if pd.isna(v) or v == "00:00:00" or v == "" or v == 0 or v == "N/A":
@@ -943,14 +1603,12 @@ else:
                     failed_points.append(f"{probe} ({k})")
 
         if std_info:
-            if overall_pass:
-                st.success("✅ **OVERALL STATUS: PASS | สถานะภาพรวม: ผ่านเกณฑ์มาตรฐาน**\n\nThe thermal profile meets all specified requirements for this product. (โปรไฟล์อุณหภูมิผ่านข้อกำหนดทั้งหมดสำหรับผลิตภัณฑ์นี้)")
+            if overall_pass: st.success("✅ **OVERALL STATUS: PASS | สถานะภาพรวม: ผ่านเกณฑ์มาตรฐาน**\n\nThe thermal profile meets all specified requirements for this product. (โปรไฟล์อุณหภูมิผ่านข้อกำหนดทั้งหมดสำหรับผลิตภัณฑ์นี้)")
             else:
                 fail_str = ", ".join(list(dict.fromkeys(failed_points)))
                 st.error(f"❌ **OVERALL STATUS: FAIL | สถานะภาพรวม: ไม่ผ่านเกณฑ์มาตรฐาน**\n\nThe thermal profile does NOT meet the requirements. Please check the red values in the matrix. (โปรไฟล์อุณหภูมิไม่ผ่านข้อกำหนด กรุณาตรวจสอบค่าสีแดงในตาราง)\n\n**Failed Items (จุดที่ไม่ผ่าน):** {fail_str}")
 
         st.markdown("---")
-        
         st.subheader("👤 Operator Info")
         m1, m2, m3 = st.columns(3)
         m1.text_input("Name", data1["operator_name"], disabled=True)
@@ -960,13 +1618,10 @@ else:
         st.markdown("<br>", unsafe_allow_html=True)
         
         col_notes, col_recipe = st.columns(2)
-        with col_notes:
-            st.text_area("💬 Notes for the current file", data1["operator_comment"], height=150)
-        with col_recipe:
-            st.text_area("⚙ Recipe", data1["process_settings"], height=150)
+        with col_notes: st.text_area("💬 Notes for the current file", data1["operator_comment"], height=150)
+        with col_recipe: st.text_area("⚙ Recipe", data1["process_settings"], height=150)
 
         st.markdown("---")
-        
         col_probes, col_img = st.columns(2)
         with col_probes:
             st.subheader("📍 Probe Locations")
@@ -976,36 +1631,14 @@ else:
                     sorted_probes = sorted(data1["probe_locations"].items(), key=lambda x: desired_order.index(x[0]) if x[0] in desired_order else 99)
                 else:
                     sorted_probes = sorted(data1["probe_locations"].items(), key=lambda x: int(x[0].replace("PB#", "")) if x[0].replace("PB#", "").isdigit() else 99)
-                
                 st.dataframe(pd.DataFrame([{"Channel": k, "Attached Location": v} for k, v in sorted_probes]), use_container_width=True, hide_index=True)
-            else:
-                st.info("No explicit probe location mapping found.")
-                
+            else: st.info("No explicit probe location mapping found.")
         with col_img:
             if data1["embedded_img"]:
                 st.subheader("🖼️ PAQ Image")
                 st.image(data1["embedded_img"], use_container_width=True)
 
         st.markdown("---")
-        show_indiv_chart = st.toggle("👁 Show / Hide Individually Aligned Chart", value=False)
-        if show_indiv_chart:
-            st.subheader("Individually Aligned Probe Chart (Own 60°C Entry)")
-            fig2 = go.Figure()
-            for col in probe_cols:
-                if col in invalid_cols:
-                    fig2.add_trace(go.Scatter(x=[np.nan], y=[np.nan], mode="lines", name=f"<span style='color:gray'>{col} (Inactive)</span>", hovertemplate=f"{col} (Inactive)<extra></extra>", line=dict(color=PROBE_COLORS.get(col))))
-                    continue
-                offset_m = data1["probe_start_info"][col]["Offset_Meters"]
-                indiv_hover = np.stack((df_m1["Time_HHMMSS"], df_m1["Time_Seconds"], np.full(len(df_m1), offset_m)), axis=-1)
-                disp_name = f"{col} (+{offset_m:.2f}m)" if offset_m > 0 else f"{col} (Lead)"
-                fig2.add_trace(go.Scatter(x=df_m1[f"Distance_{col}"], y=df_m1[col], mode="lines", name=disp_name, customdata=indiv_hover, hovertemplate=f"{col}: %{{y:.1f}} °C<br>Indiv Dist: %{{x:.2f}} m<br>Time: %{{customdata[0]}}", line=dict(color=PROBE_COLORS.get(col))))
-            for z in zones:
-                z_color = GROUP_COLORS.get(z["group"], "rgba(200, 200, 200, 0.2)")
-                fig2.add_vrect(x0=z["start"], x1=z["start"] + z["length"], fillcolor=z_color, layer="below", line_width=0.5, line_dash="dot", line_color="rgba(120, 120, 120, 0.4)", annotation_text=f"{z['num']}.{z['name']}", annotation_position="top left", annotation=dict(font_size=9, font_color="#a0aab2", textangle=-90))
-            fig2.update_layout(title=f"INDIVIDUALLY ALIGNED PROFILES ({f_variant}): {data1['filename']}", xaxis=dict(title="Individual Probe Distance (Meters from Probe's 60°C Entry)", range=[-1, total_furnace_length + 2]), yaxis_title="Temperature (°C)", hovermode="x unified", template="plotly_white", height=550)
-            st.plotly_chart(fig2, use_container_width=True)
-
-    with tabs[1]:
         st.subheader("🔥 Zone Peak Temperatures")
         zone_max_records = []
         for z in zones:
@@ -1013,9 +1646,7 @@ else:
             r = {"Group": z["group"], "Zone #": z["num"], "Zone Name": z["name"], "Start (m)": z["start"], "End (m)": round(z["start"] + z["length"], 2)}
             if not z_df.empty and probe_cols:
                 max_s = z_df[probe_cols].max()
-                for col in probe_cols: 
-                    r[col] = "***" if col in invalid_cols else max_s[col]
-                
+                for col in probe_cols: r[col] = "***" if col in invalid_cols else max_s[col]
                 valid_max = [max_s[c] for c in probe_cols if c not in invalid_cols and pd.notna(max_s[c])]
                 r["Zone Peak (°C)"] = max(valid_max) if valid_max else np.nan
                 r["Hot Probe"] = max_s[[c for c in probe_cols if c not in invalid_cols]].idxmax() if valid_max else "-"
@@ -1037,13 +1668,12 @@ else:
             else:
                 shift_rows.append({"Probe": col, "Start Time (HH:MM:SS)": info["Start_HHMMSS"], "Start Sec": f"{info['Start_Sec']}s", "Lag Time vs First": f"+{info['Offset_Sec']}s" if info['Offset_Sec'] > 0 else "0s (Lead)", "Distance Shift": f"+{info['Offset_Meters']:.2f} m" if info['Offset_Meters'] > 0 else "0.00 m (Lead)", "Status": "🏆 First (Lead)" if info["Is_First"] else f"+{info['Offset_Meters']:.2f} m lag"})
         st.dataframe(pd.DataFrame(shift_rows), use_container_width=True, hide_index=True)
-
-    with tabs[2]:
+        
+        st.markdown("---")
         st.subheader("📈 Temperature Distribution Boxplot by Probe")
         fig_box = go.Figure()
         for idx, col in enumerate(probe_cols): 
-            if col not in invalid_cols:
-                fig_box.add_trace(go.Box(y=df_m1[col].dropna(), name=col, boxpoints='outliers', marker_color=PROBE_COLORS.get(col)))
+            if col not in invalid_cols: fig_box.add_trace(go.Box(y=df_m1[col].dropna(), name=col, boxpoints='outliers', marker_color=PROBE_COLORS.get(col)))
         fig_box.update_layout(title="Temperature Distribution Across Probes", yaxis_title="Temperature (°C)", template="plotly_white", height=500)
         st.plotly_chart(fig_box, use_container_width=True)
 
@@ -1056,13 +1686,41 @@ else:
                 z_vals = df_z[[c for c in probe_cols if c not in invalid_cols]].values.flatten()
                 z_vals = z_vals[~np.isnan(z_vals)]
                 if len(z_vals) > 0: stats_list.append({"Zone #": z["num"], "Zone Name": z["name"], "Group": z["group"], "Avg Temp (°C)": round(np.mean(z_vals), 2), "Std Dev (°C)": round(np.std(z_vals, ddof=1), 2), "Min Temp (°C)": round(np.min(z_vals), 2), "Max Temp (°C)": round(np.max(z_vals), 2), "Data Points": len(z_vals) })
-        st.dataframe(pd.DataFrame(stats_list), use_container_width=True, hide_index=True)
+        
+        df_stats = pd.DataFrame(stats_list)
+        if not df_stats.empty:
+            try:
+                st.dataframe(df_stats.style.apply(highlight_row_by_group, axis=1), use_container_width=True, hide_index=True)
+            except Exception:
+                st.dataframe(df_stats, use_container_width=True, hide_index=True)
+        else:
+            st.dataframe(df_stats, use_container_width=True, hide_index=True)
 
-    with tabs[3]:
+        st.markdown("---")
+        show_indiv_chart = st.toggle("👁 Show / Hide Individually Aligned Chart", value=False)
+        if show_indiv_chart:
+            st.subheader("Individually Aligned Probe Chart (Own 60°C Entry)")
+            fig2 = go.Figure()
+            for col in probe_cols:
+                if col in invalid_cols:
+                    fig2.add_trace(go.Scatter(x=[np.nan], y=[np.nan], mode="lines", name=f"<span style='color:gray'>{col} (Inactive)</span>", hovertemplate=f"{col} (Inactive)<extra></extra>", line=dict(color=PROBE_COLORS.get(col))))
+                    continue
+                offset_m = data1["probe_start_info"][col]["Offset_Meters"]
+                indiv_hover = np.stack((df_m1["Time_HHMMSS"], df_m1["Time_Seconds"], np.full(len(df_m1), offset_m)), axis=-1)
+                disp_name = f"{col} (+{offset_m:.2f}m)" if offset_m > 0 else f"{col} (Lead)"
+                fig2.add_trace(go.Scatter(x=df_m1[f"Distance_{col}"], y=df_m1[col], mode="lines", name=disp_name, customdata=indiv_hover, hovertemplate=f"{col}: %{{y:.1f}} °C<br>Indiv Dist: %{{x:.2f}} m<br>Time: %{{customdata[0]}}", line=dict(color=PROBE_COLORS.get(col))))
+            for z in zones:
+                z_color = GROUP_COLORS.get(z["group"], "rgba(200, 200, 200, 0.2)")
+                fig2.add_vrect(x0=z["start"], x1=z["start"] + z["length"], fillcolor=z_color, layer="below", line_width=0.5, line_dash="dot", line_color="rgba(120, 120, 120, 0.4)", annotation_text=f"{z['num']}.{z['name']}", annotation_position="top left", annotation=dict(font_size=9, font_color="#a0aab2", textangle=-90))
+            fig2.update_layout(title=f"INDIVIDUALLY ALIGNED PROFILES ({f_variant}): {data1['filename']}", xaxis=dict(title="Individual Probe Distance (Meters from Probe's 60°C Entry)", range=[-1, total_furnace_length + 2]), yaxis_title="Temperature (°C)", hovermode="x unified", template="plotly_white", height=550)
+            st.plotly_chart(fig2, use_container_width=True)
+
+        # ย้าย Data Export & Download มาไว้ด้านล่างสุดของ Tab แรก
+        st.markdown("---")
         st.subheader("💾 Data Export & Download")
+        st.write("เลือกรูปแบบข้อมูลที่ต้องการดาวน์โหลด (Select the data format to download):")
         
         row_data = {"File_Name": data1["filename"], "Furnace_Type": f_variant, "Operator_Name": data1["operator_name"], "Company": data1["company"], "Site": data1["site"], "Entrance_Time": data1["detected_start_hhmmss"], "Line_Speed_MPM": data1["line_speed_mpm"]}
-        
         max_export_pb = max([int(c.replace("PB#", "")) for c in probe_cols] + [8])
         for pb in [f"PB{i}" for i in range(1, max_export_pb + 1)]:
             ch = f"PB#{pb.replace('PB','')}"
@@ -1081,72 +1739,57 @@ else:
                 
         df_single_row = pd.DataFrame([row_data])
 
+        # จัด 2 คอลัมน์กว้างเท่ากัน เพื่อความสวยงาม
         col1, col2 = st.columns(2)
-        
         with col1:
-            st.markdown("#### 📊 1. Download Analysis Report")
-            st.caption("ดาวน์โหลดสรุปผล (Zone Peaks & Inspection Matrix)")
+            st.markdown("#### 📊 1. Analysis Report")
+            report_format = st.radio("เลือกชนิดไฟล์ (Select Format):", ["Excel (.xlsx)", "CSV (.csv)"], horizontal=True, key="radio_report")
             
-            buffer_report = io.BytesIO()
-            with pd.ExcelWriter(buffer_report, engine='openpyxl') as writer:
-                df_single_row.to_excel(writer, sheet_name="Master_Record", index=False)
-                df_zone_summary.to_excel(writer, sheet_name="Zone_Peaks", index=False)
-                pd.DataFrame(matrix_rows).to_excel(writer, sheet_name="Inspection_Matrix", index=False)
-            
-            st.download_button(
-                label="📥 Download Report (.xlsx)", 
-                data=buffer_report.getvalue(), 
-                file_name=f"{os.path.splitext(data1['filename'])[0]}_Report.xlsx", 
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True
-            )
+            if report_format == "Excel (.xlsx)":
+                buffer_report = io.BytesIO()
+                with pd.ExcelWriter(buffer_report, engine='openpyxl') as writer:
+                    df_single_row.to_excel(writer, sheet_name="Master_Record", index=False)
+                    df_zone_summary.to_excel(writer, sheet_name="Zone_Peaks", index=False)
+                    pd.DataFrame(matrix_rows).to_excel(writer, sheet_name="Inspection_Matrix", index=False)
+                st.download_button(label="📥 Download Report (.xlsx)", data=buffer_report.getvalue(), file_name=f"{os.path.splitext(data1['filename'])[0]}_Report.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+            elif report_format == "CSV (.csv)":
+                # สำหรับ CSV รวมข้อมูลเบื้องต้นและ Matrix ไปในไฟล์เดียว
+                csv_data = pd.concat([df_single_row, pd.DataFrame(matrix_rows)], axis=0).to_csv(index=False).encode('utf-8')
+                st.download_button(label="📥 Download Report (.csv)", data=csv_data, file_name=f"{os.path.splitext(data1['filename'])[0]}_Report.csv", mime="text/csv", use_container_width=True)
                 
         with col2:
-            st.markdown("#### 📈 2. Download Raw Data")
-            st.caption("ดาวน์โหลดข้อมูลอุณหภูมิดิบที่ใช้แสดงผลกราฟ")
-            raw_format = st.radio("เลือกชนิดไฟล์ Raw Data:", ["CSV (.csv)", "Excel (.xlsx)"], horizontal=True, key="radio_raw")
-            
+            st.markdown("#### 📈 2. Raw Profile Data")
+            raw_format = st.radio("เลือกชนิดไฟล์ (Select Format):", ["CSV (.csv)", "Excel (.xlsx)"], horizontal=True, key="radio_raw")
             df_raw_export = df_m1.drop(columns=[c for c in df_m1.columns if "Distance_PB#" in c], errors='ignore')
             
             if raw_format == "Excel (.xlsx)":
                 buffer_raw = io.BytesIO()
-                with pd.ExcelWriter(buffer_raw, engine='openpyxl') as writer:
-                    df_raw_export.to_excel(writer, sheet_name="Raw_Profile_Data", index=False)
-                
-                st.download_button(
-                    label="📥 Download Raw Data (.xlsx)", 
-                    data=buffer_raw.getvalue(), 
-                    file_name=f"{os.path.splitext(data1['filename'])[0]}_RawData.xlsx", 
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True
-                )
-                
+                with pd.ExcelWriter(buffer_raw, engine='openpyxl') as writer: df_raw_export.to_excel(writer, sheet_name="Raw_Profile_Data", index=False)
+                st.download_button(label="📥 Download Raw Data (.xlsx)", data=buffer_raw.getvalue(), file_name=f"{os.path.splitext(data1['filename'])[0]}_RawData.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
             elif raw_format == "CSV (.csv)":
                 csv_data = df_raw_export.to_csv(index=False).encode('utf-8')
-                st.download_button(
-                    label="📥 Download Raw Data (.csv)", 
-                    data=csv_data, 
-                    file_name=f"{os.path.splitext(data1['filename'])[0]}_RawData.csv", 
-                    mime="text/csv",
-                    use_container_width=True
-                )
+                st.download_button(label="📥 Download Raw Data (.csv)", data=csv_data, file_name=f"{os.path.splitext(data1['filename'])[0]}_RawData.csv", mime="text/csv", use_container_width=True)
 
-    with tabs[4]:
+# ---------------------------------------------------------
+# TAB 1: COMPARE FILES
+# ---------------------------------------------------------
+with tabs[1]:
+    if not data1:
+        st.markdown('<div class="custom-warning-box">⚠️ <b>กรุณาอัปโหลดไฟล์หลัก (.PAQ) ที่แถบด้านซ้ายมือก่อน!</b> โหมด Compare จำเป็นต้องใช้ข้อมูลจากไฟล์หลักเพื่อใช้เป็นจุดอ้างอิงในการเปรียบเทียบกราฟครับ</div>', unsafe_allow_html=True)
+    else:
         st.subheader("⚖️ Compare Profiles Across Two Files")
         uploaded_file2 = st.file_uploader("📂 Upload 2nd .PAQ File to Compare", type=["paq"], key=f"paq2_{st.session_state.paq2_uploader_key}")
         
         if not uploaded_file2: 
-            st.info("👆 Please upload a second `.paq` file above to view the comparison graph.")
+            st.markdown('<div class="custom-info-box">👆 <b>กรุณาอัปโหลดไฟล์ที่ 2 (.paq) ที่ช่องด้านบนด้วย NB เดียวกัน เพื่อแสดงผลกราฟเปรียบเทียบครับ</b></div>', unsafe_allow_html=True)
         else:
             data2 = process_paq_file(uploaded_file2.getvalue(), uploaded_file2.name)
             if not data2: 
                 st.error("❌ Failed to parse second `.paq` file.")
-            elif data1["furnace_id"] != data2["furnace_id"]:
-                st.error(f"❌ **ข้อมูลเตาอบไม่ตรงกัน (Furnace Mismatch)!**\n\n"
-                         f"🇹🇭 ไฟล์หลักคือเตา **{data1['furnace_id']}** แต่ไฟล์ที่เลือกมาเปรียบเทียบคือเตา **{data2['furnace_id']}** กรุณาเลือกไฟล์ที่เป็นเตาอบเดียวกัน\n\n"
-                         f"🇬🇧 The main file is **{data1['furnace_id']}**, but the comparison file is **{data2['furnace_id']}**. Please select a file from the same furnace.")
+            elif re.sub(r'[^A-Za-z0-9]', '', data1["furnace_id"]) != re.sub(r'[^A-Za-z0-9]', '', data2["furnace_id"]):
+                st.markdown(f'<div class="custom-warning-box">⚠️ <b>กรุณาอัปโหลดไฟล์เปรียบเทียบจากเตาเดียวกัน ({data1["furnace_id"]})!</b><br>คุณกำลังพยายามเปรียบเทียบข้ามเตา (ไฟล์หลัก: <b>{data1["furnace_id"]}</b> / ไฟล์ที่เลือก: <b>{data2["furnace_id"]}</b>)<br><i>*สามารถเปรียบเทียบต่างรุ่นหรือต่างผลิตภัณฑ์ได้ แต่ต้องมาจากกระบวนการเตาเดียวกัน (NB เดียวกัน) ครับ</i></div>', unsafe_allow_html=True)
                 
-                if st.button("รับทราบและเลือกไฟล์ใหม่ (Acknowledge & Select New File)"):
+                if st.button("🔄 รับทราบและเลือกไฟล์ใหม่ (Acknowledge & Select New File)"):
                     st.session_state.paq2_uploader_key += 1
                     st.rerun()
             else:
@@ -1198,3 +1841,497 @@ else:
                 )
                 
                 st.plotly_chart(fig_comp, use_container_width=True)
+                
+                # นำข้อมูลทั้ง 2 ไฟล์มารวมกันแล้วสร้างปุ่มดาวน์โหลด
+                st.markdown("---")
+                st.markdown("##### 📥 Export Compare Data")
+                df_comp1 = df_m1[['Distance_Meters'] + [c for c in probe_cols if c in df_m1.columns]].copy()
+                df_comp2 = df_m2[['Distance_Meters'] + [c for c in data2["probe_cols"] if c in df_m2.columns]].copy()
+                df_comp1.columns = ['Distance_Meters'] + [f"F1_{c}" for c in df_comp1.columns if c != 'Distance_Meters']
+                df_comp2.columns = ['Distance_Meters'] + [f"F2_{c}" for c in df_comp2.columns if c != 'Distance_Meters']
+                
+                # Merge based on closest Distance_Meters (rounded to 2 decimal places to help matching)
+                df_comp1['Merge_Dist'] = df_comp1['Distance_Meters'].round(2)
+                df_comp2['Merge_Dist'] = df_comp2['Distance_Meters'].round(2)
+                df_merged = pd.merge(df_comp1, df_comp2, on='Merge_Dist', how='outer').sort_values('Merge_Dist')
+                df_merged = df_merged.drop(columns=['Merge_Dist'])
+                
+                excel_bytes = to_excel_bytes(df_merged)
+                st.download_button(
+                    label="📊 Download Compared Data (.xlsx)",
+                    data=excel_bytes,
+                    file_name="Compared_Profile_Data.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True,
+                    type="primary"
+                )
+
+# ---------------------------------------------------------
+# TAB 2: COMBINE RECORDER DATA
+# ---------------------------------------------------------
+with tabs[2]:
+    st.markdown("### 🔗 Recorder Data (Standalone / Combine)")
+    
+    display_mode = st.radio(
+        "รูปแบบการแสดงผล (Display Mode):",
+        ("แสดงกราฟ Recorder อย่างเดียว (Standalone Mode)", "ผสานกราฟ Datapaq และ Recorder (Combine Mode)"),
+        horizontal=True
+    )
+    st.markdown("---")
+
+    # ==========================================
+    # กรณีเลือก "ไม่ประสาน" (Standalone Mode)
+    # ==========================================
+    if display_mode == "แสดงกราฟ Recorder อย่างเดียว (Standalone Mode)":
+        col_title, col_clear = st.columns([4, 1])
+        with col_title:
+            st.markdown("### 📁 Upload Recorder Data (Standalone Mode)")
+        with col_clear:
+            # ย้ายปุ่ม Clear ให้ตรงกับระดับหัวข้อหลัก
+            st.markdown("<div style='margin-top: 5px;'></div>", unsafe_allow_html=True)
+            if st.button("🗑️ Clear Data", key="clear_recorder_btn", use_container_width=True):
+                st.session_state.recorder_uploader_key += 1
+                st.rerun()
+            
+        st.markdown('<div class="custom-info-box">💡 <b>โหมดนี้จะแสดงผลกราฟของ Recorder เดี่ยวๆ</b> โดยสามารถดูข้อมูลของเตาใดก็ได้ ไม่ต้องอ้างอิงกับไฟล์ Datapaq หลัก</div>', unsafe_allow_html=True)
+        
+        rec_file_type = st.radio(
+            "เลือกประเภทเตาและไฟล์ (Select Furnace & File Type):",
+            ("NB1 / NB2 Furnace Recorder (.DAD)", "NB3 Furnace Recorder (.CSV)", "NB1 Debinder Furnace Recorder (.CSV)"),
+            horizontal=True
+        )
+        
+        uploaded_rec_files = None
+        if rec_file_type == "NB1 / NB2 Furnace Recorder (.DAD)":
+            st.caption("Upload NB1/NB2 Recorder (.DAD)")
+            uploaded_rec_files = st.file_uploader("Drop .DAD here", type=["dad"], accept_multiple_files=True, key=f"std_dad_{st.session_state.recorder_uploader_key}", label_visibility="collapsed")
+            
+            if uploaded_rec_files:
+                files_data = [(f.name, f.read()) for f in uploaded_rec_files]
+                machine_type, active_channels = check_machine_type([f[0] for f in files_data])
+                
+                if machine_type == 'MIXED':
+                    st.error('🚨 ตรวจพบการอัปโหลดไฟล์จากทั้งเครื่อง NB1 และ NB2 ปะปนกัน! กรุณากดปุ่ม "Clear Data" และอัปโหลดไฟล์แยกเครื่องกันครับ')
+                else:
+                    value_mode = st.selectbox('เลือกประเภทของค่าที่ต้องการวิเคราะห์:', options=['MIN', 'AVG (เฉลี่ย)', 'MAX'], index=2)
+                    mode_key = {'MIN': '_min', 'AVG (เฉลี่ย)': '_avg', 'MAX': '_max'}[value_mode]
+                    
+                    data = process_dad_files(tuple((n,d) for n,d in files_data), mode_key, tuple(active_channels))
+                    if not data: st.error('🚨 ไม่พบข้อมูลในไฟล์ที่อัปโหลด')
+                    else:
+                        st.success(f"✓ โหลดข้อมูล {len(data)} แถว สำเร็จ (ช่วงเวลา: {data[0]['ts']} ถึง {data[-1]['ts']})")
+                        
+                        tb_y_range = [540, 650] if machine_type == 'NB1' else [400, 650]
+                        top_chs = [ch for ch in active_channels if ch[0] in ['CH001','CH002','CH003','CH004','CH005','CH006','CH007']]
+                        fig_top = render_single_chart(data, top_chs, COLORS_TOP, f'Top Zones Temperature ({machine_type})', tb_y_range, '°C')
+                        if fig_top: st.plotly_chart(fig_top, use_container_width=True)
+
+                        bot_chs = [ch for ch in active_channels if ch[0] in ['CH008','CH009','CH010','CH011','CH012','CH013','CH014']]
+                        fig_bot = render_single_chart(data, bot_chs, COLORS_BOT, f'Bottom Zones Temperature ({machine_type})', tb_y_range, '°C')
+                        if fig_bot: st.plotly_chart(fig_bot, use_container_width=True)
+
+                        dry_chs = [ch for ch in active_channels if ch[0] in ['CH016','CH017']]
+                        dry_y_range = [150, 350] if machine_type == 'NB1' else [150, 400]
+                        fig_dry = render_single_chart(data, dry_chs, COLORS_DRY, f'Dryer Zones Temperature ({machine_type})', dry_y_range, '°C')
+                        if fig_dry: st.plotly_chart(fig_dry, use_container_width=True)
+                        
+                        if machine_type == 'NB2':
+                            o2_chs = [ch for ch in active_channels if ch[0] in ['CH015', 'CH018']]
+                            fig_o2 = render_single_chart(data, o2_chs, COLORS_O2_NB2, 'O2 Concentration Level', [0, 150], 'ppm', hline=100)
+                            if fig_o2: st.plotly_chart(fig_o2, use_container_width=True)
+                        else:
+                            o2_chs = [ch for ch in active_channels if ch[0] in ['CH015', 'CH019']]
+                            n2_chs = [ch for ch in active_channels if ch[0] == 'CH018']
+                            fig_o2_n2 = render_dual_axis_chart(data, o2_chs, n2_chs, COLORS_O2_NB1, COLORS_N2, 'O2 Concentration & N2 Flow Rate', [0, 150], 'O2 (ppm)', '', hline_left=100, y2_range=[0, 5000])
+                            if fig_o2_n2: st.plotly_chart(fig_o2_n2, use_container_width=True)
+                            
+                            dew_chs = [ch for ch in active_channels if ch[0] == 'CH020']
+                            fig_dew = render_single_chart(data, dew_chs, COLORS_DEW, 'Dew Point', [-100, 10], 'Cdp')
+                            if fig_dew: 
+                                fig_dew.update_layout(yaxis=dict(range=[-100, 10], autorange=False, title_text='Cdp'))
+                                st.plotly_chart(fig_dew, use_container_width=True)
+                                
+                        st.markdown("---")
+                        st.markdown("##### 📥 Export Recorder Data")
+                        df_export = pd.DataFrame(data)
+                        excel_bytes = to_excel_bytes(df_export)
+                        st.download_button(label="📊 Download Recorder Data (.xlsx)", data=excel_bytes, file_name="Recorder_Data_Standalone.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True, type="primary")
+
+        elif rec_file_type == "NB3 Furnace Recorder (.CSV)":
+            st.caption("Upload NB3 Furnace (.CSV)")
+            uploaded_rec_files = st.file_uploader("Drop .CSV here", type=["csv"], accept_multiple_files=True, key=f"std_nb3_csv_{st.session_state.recorder_uploader_key}", label_visibility="collapsed")
+            
+            if uploaded_rec_files:
+                df_nb3 = process_nb3_files(uploaded_rec_files)
+                if not df_nb3.empty:
+                    # 1. แสดงเวลาที่เริ่มต้นกระบวนการ (Zone 1 หรือ Zone 2 อุณหภูมิเกิน 60°C ต่อเนื่อง)
+                    start_time_nb3 = extract_csv_start_time(df_nb3, ["Top Zone #1", "Top Zone #2", "Bottom Zone #1", "Bottom Zone #2"])
+                    if start_time_nb3 is not None:
+                        st.success(f"✓ โหลดข้อมูล {len(df_nb3)} แถว สำเร็จ (ช่วงเวลา: {df_nb3['DateTime'].min()} ถึง {df_nb3['DateTime'].max()})\n\n**Process Started at:** {start_time_nb3}")
+                    else:
+                        st.success(f"✓ โหลดข้อมูล {len(df_nb3)} แถว สำเร็จ (ช่วงเวลา: {df_nb3['DateTime'].min()} ถึง {df_nb3['DateTime'].max()})")
+                    
+                    st.markdown("##### 1) Top Zone Temperature (#1 to #7)")
+                    fig1 = go.Figure()
+                    top_colors = ["#FF0000", "#008000", "#0000FF", "#8A2BE2", "#A52A2A", "#FFA500", "#9ACD32"]
+                    for i in range(1, 8):
+                        if f"Top Zone #{i}" in df_nb3.columns:
+                            fig1.add_trace(go.Scatter(x=df_nb3["DateTime"], y=df_nb3[f"Top Zone #{i}"], name=f"Top Zone #{i}", mode="lines", line=dict(color=top_colors[i-1], width=2)))
+                    apply_industrial_style(fig1, "Temperature (°C)")
+                    st.plotly_chart(fig1, use_container_width=True)
+
+                    st.markdown("##### 2) Bottom Zone Temperature (#1 to #7)")
+                    fig2 = go.Figure()
+                    bottom_colors = ["#00BFFF", "#FF1493", "#808080", "#00FF00", "#008000", "#0000FF", "#8A2BE2"]
+                    for i in range(1, 8):
+                        if f"Bottom Zone #{i}" in df_nb3.columns:
+                            fig2.add_trace(go.Scatter(x=df_nb3["DateTime"], y=df_nb3[f"Bottom Zone #{i}"], name=f"Bottom Zone #{i}", mode="lines", line=dict(color=bottom_colors[i-1], width=2)))
+                    apply_industrial_style(fig2, "Temperature (°C)")
+                    st.plotly_chart(fig2, use_container_width=True)
+
+                    st.markdown("##### 3) DRYOFF Temperature")
+                    fig3 = go.Figure()
+                    dry_colors = ["#FFA500", "#9ACD32", "#008B8B"]
+                    dryoff_names = ["DRYOFF1", "DRYOFF2", "DRYOFF3"]
+                    for i in range(1, 4):
+                        if dryoff_names[i-1] in df_nb3.columns:
+                            fig3.add_trace(go.Scatter(x=df_nb3["DateTime"], y=df_nb3[dryoff_names[i-1]], name=dryoff_names[i-1], mode="lines", line=dict(color=dry_colors[i-1], width=2)))
+                    apply_industrial_style(fig3, "Temperature (°C)")
+                    st.plotly_chart(fig3, use_container_width=True)
+
+                    st.markdown("##### 4) Oxygen EXIT/ENTRANCE & N2 Flow")
+                    fig4 = make_subplots(specs=[[{"secondary_y": True}]])
+                    if "Oxygen EXIT" in df_nb3.columns:
+                        fig4.add_trace(go.Scatter(x=df_nb3["DateTime"], y=df_nb3["Oxygen EXIT"], name="Oxygen EXIT", mode="lines", line=dict(color="#FF00FF", width=2)), secondary_y=False)
+                    if "Oxygen ENTRANCE" in df_nb3.columns:
+                        fig4.add_trace(go.Scatter(x=df_nb3["DateTime"], y=df_nb3["Oxygen ENTRANCE"], name="Oxygen ENTRANCE", mode="lines", line=dict(color="#A52A2A", width=2)), secondary_y=False)
+                    if "N2 Exit" in df_nb3.columns:
+                        fig4.add_trace(go.Scatter(x=df_nb3["DateTime"], y=df_nb3["N2 Exit"], name="N2 Exit", mode="lines", line=dict(color="#1f77b4", width=2, dash="dash")), secondary_y=True)
+                    if "N2 Entrance" in df_nb3.columns:
+                        fig4.add_trace(go.Scatter(x=df_nb3["DateTime"], y=df_nb3["N2 Entrance"], name="N2 Entrance", mode="lines", line=dict(color="#2ca02c", width=2, dash="dash")), secondary_y=True)
+                    
+                    apply_industrial_style(fig4, "Oxygen Level (ppm)", is_dual_axis=True)
+                    fig4.update_layout(yaxis=dict(title=dict(text="Oxygen Level (ppm) [0-200]"), range=[0, 200], showgrid=True), yaxis2=dict(title=dict(text="N2 Flow Rate [0-1000]"), showgrid=False, overlaying="y", side="right", range=[0, 1000]))
+                    st.plotly_chart(fig4, use_container_width=True)
+
+                    st.markdown("##### 5) COOL WATER TEMP")
+                    fig5 = go.Figure()
+                    if "COOL WATER TEMP" in df_nb3.columns:
+                        fig5.add_trace(go.Scatter(x=df_nb3["DateTime"], y=df_nb3["COOL WATER TEMP"], name="COOL WATER TEMP", mode="lines", line=dict(color="#008B8B", width=2)))
+                    apply_industrial_style(fig5, "Cool Water Temp (°C)", y_range=[-150, 500])
+                    st.plotly_chart(fig5, use_container_width=True)
+                    
+                    st.markdown("---")
+                    st.markdown("##### 📥 Export Recorder Data")
+                    excel_bytes = to_excel_bytes(df_nb3)
+                    st.download_button(label="📊 Download Recorder Data (.xlsx)", data=excel_bytes, file_name="NB3_Recorder_Data_Standalone.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True, type="primary")
+
+        elif rec_file_type == "NB1 Debinder Furnace Recorder (.CSV)":
+            st.caption("Upload NB1 Debinder (.CSV)")
+            uploaded_rec_files = st.file_uploader("Drop .CSV here", type=["csv"], accept_multiple_files=True, key=f"std_nb1_csv_{st.session_state.recorder_uploader_key}", label_visibility="collapsed")
+            
+            if uploaded_rec_files:
+                df_deb = process_debinder_files(uploaded_rec_files)
+                if not df_deb.empty:
+                    # 1. แสดงเวลาที่เริ่มต้นกระบวนการ (Zone 1 หรือ Zone 2 อุณหภูมิเกิน 60°C ต่อเนื่อง)
+                    start_time_deb = extract_csv_start_time(df_deb, ["Zone #1", "Zone #2"])
+                    if start_time_deb is not None:
+                        st.success(f"✓ โหลดข้อมูล {len(df_deb)} แถว สำเร็จ (ช่วงเวลา: {df_deb['DateTime'].min()} ถึง {df_deb['DateTime'].max()})\n\n**Process Started at:** {start_time_deb}")
+                    else:
+                        st.success(f"✓ โหลดข้อมูล {len(df_deb)} แถว สำเร็จ (ช่วงเวลา: {df_deb['DateTime'].min()} ถึง {df_deb['DateTime'].max()})")
+                    
+                    fig = make_subplots(specs=[[{"secondary_y": True}]])
+                    zone_colors = ["#FF3333", "#1E90FF", "#2ED573", "#FF9F1A"]
+                    for i in range(1, 5):
+                        fig.add_trace(go.Scatter(x=df_deb["DateTime"], y=df_deb[f"Zone #{i}"], name=f"Zone #{i} (Max)", mode="lines", line=dict(color=zone_colors[i-1], width=2)), secondary_y=False)
+                    fig.add_trace(go.Scatter(x=df_deb["DateTime"], y=df_deb["Combustion Air Temp"], name="Comb Air (Max)", mode="lines", line=dict(color="#00E5FF", width=2, dash="dash")), secondary_y=True)
+                    
+                    fig.update_layout(
+                        hovermode="x unified", height=450, margin=dict(l=60, r=180, t=30, b=40),
+                        yaxis=dict(range=[0, 400], title="Temperature (°C)"),
+                        yaxis2=dict(title="Comb Air (°C)", overlaying="y", side="right", range=[0, 150])
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+                    
+                    st.markdown("---")
+                    st.markdown("##### 📥 Export Recorder Data")
+                    excel_bytes = to_excel_bytes(df_deb)
+                    st.download_button(label="📊 Download Recorder Data (.xlsx)", data=excel_bytes, file_name="NB1_Debinder_Data_Standalone.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True, type="primary")
+
+    # ==========================================
+    # กรณีเลือก "ประสาน" (Combine Mode)
+    # ==========================================
+    else:
+        if not data1:
+            st.markdown("### 📁 Upload Recorder Data (Combine Mode)")
+            st.markdown('<div class="custom-warning-box">⚠️ <b>กรุณาอัปโหลดไฟล์หลัก (.PAQ) ที่แถบด้านซ้ายมือก่อน!</b> โหมด Combine จำเป็นต้องใช้ข้อมูลเวลาการเข้าเตาจากไฟล์ Datapaq เพื่อใช้เป็นจุดอ้างอิงในการผสานกราฟครับ</div>', unsafe_allow_html=True)
+        else:
+            furnace_id = data1["furnace_id"]
+            
+            st.markdown(f'<div class="custom-info-box">📌 <b>ข้อแนะนำ (Recommendation):</b> ไฟล์หลัก (Datapaq) ของคุณคือเตา <b>{furnace_id}</b> ระบบจะตรวจสอบและอนุญาตให้อัปโหลดเฉพาะไฟล์ข้อมูลของเตา <b>{furnace_id}</b> เท่านั้น</div>', unsafe_allow_html=True)
+            st.markdown('<div style="opacity:0.8; margin-bottom: 10px;">💡 โหมดนี้จะทำการผสานกราฟระหว่างข้อมูล Datapaq และ Recorder เข้าด้วยกัน โดยใช้เวลาและวันที่อ้างอิงจากไฟล์ Datapaq อัตโนมัติ</div>', unsafe_allow_html=True)
+            
+            st.markdown("#### ⏱️ Reference PAQ Info")
+            col_date, col_time, col_furnace = st.columns(3)
+            with col_date: 
+                try:
+                    default_date_obj = data1["extracted_date"]
+                except Exception:
+                    default_date_obj = pd.Timestamp.now().date()
+                edited_start_date = st.date_input("PAQ Run Date", value=default_date_obj)
+            with col_time: 
+                try:
+                    actual_start_time = data1["extracted_time"]
+                except Exception:
+                    actual_start_time = "00:00:00"
+                edited_start_time = st.text_input("PAQ Collection Started", value=actual_start_time, help="เช่น 14:00:11 หรือ 02:22:55 PM")
+            with col_furnace: 
+                st.text_input("Furnace (อ้างอิงจากไฟล์หลัก)", value=furnace_id, disabled=True)
+
+            try:
+                # ลองแปลงด้วย pandas เพื่อรองรับรูปแบบ 12H (AM/PM) และ 24H
+                parsed_time = pd.to_datetime(edited_start_time).time()
+                paq_start_dt = datetime.combine(edited_start_date, parsed_time)
+            except Exception:
+                try:
+                    time_parts = edited_start_time.replace('.', ':').split(':')
+                    hh = int(time_parts[0]) if len(time_parts) > 0 else 0
+                    mm = int(time_parts[1]) if len(time_parts) > 1 else 0
+                    ss = int(time_parts[2]) if len(time_parts) > 2 else 0
+                    paq_start_dt = datetime.combine(edited_start_date, time(hh, mm, ss))
+                except Exception:
+                    paq_start_dt = datetime.combine(edited_start_date, time(0, 0, 0))
+
+            df_paq = data1["df_master"].copy()
+            # ใช้เวลาเริ่มต้นที่แก้ไขได้เป็นตัวอ้างอิง
+            df_paq["Sync_DateTime"] = paq_start_dt + pd.to_timedelta(df_paq["Time_Seconds"] - data1['detected_start_sec'], unit="s")
+            
+            # คำนวณระยะเวลาในเตาอบเพื่อสร้างขอบเขตในการ Zoom
+            zones = data1["cfg"]["zones"]
+            total_furnace_length = zones[-1]["start"] + zones[-1]["length"] if zones else 0
+            furnace_duration_secs = (total_furnace_length / data1['line_speed_mpm']) * 60 if data1.get('line_speed_mpm') else 3600
+            zoom_x_range = [paq_start_dt - timedelta(minutes=5), paq_start_dt + timedelta(seconds=furnace_duration_secs + 300)]
+
+            st.markdown("---")
+            col_up_title, col_up_clear = st.columns([4, 1])
+            with col_up_title:
+                st.markdown(f"#### 📁 Upload Recorder Data for {furnace_id}")
+            with col_up_clear:
+                st.markdown("<div style='margin-top: 5px;'></div>", unsafe_allow_html=True)
+                if st.button("🗑️ Clear Data", key="clear_combine_btn", use_container_width=True):
+                    st.session_state.recorder_uploader_key += 1
+                    st.rerun()
+            
+            rec_dad_files, rec_csv_files = None, None
+            if furnace_id == "NB1":
+                col_up1, col_up2 = st.columns(2)
+                with col_up1: 
+                    st.markdown("<span style='color:#f39c12; font-size:0.85rem;'>⚠️ จำกัดจำนวนอัปโหลด: <b>ไม่เกิน 6 ไฟล์</b></span>", unsafe_allow_html=True)
+                    rec_dad_files = st.file_uploader(f"Upload {furnace_id} Recorder (.DAD)", type=["dad"], accept_multiple_files=True, key=f"cmb_dad_nb1_{st.session_state.recorder_uploader_key}")
+                    if rec_dad_files and len(rec_dad_files) > 6:
+                        st.warning("⚠️ อัปโหลดเกิน 6 ไฟล์ ระบบจะประมวลผลเฉพาะ 6 ไฟล์แรกเท่านั้นเพื่อป้องกันระบบค้าง")
+                        rec_dad_files = rec_dad_files[:6]
+                with col_up2: 
+                    st.markdown("<span style='color:#f39c12; font-size:0.85rem;'>⚠️ จำกัดจำนวนอัปโหลด: <b>ไม่เกิน 2 ไฟล์</b></span>", unsafe_allow_html=True)
+                    rec_csv_files = st.file_uploader(f"Upload {furnace_id} Debinder (.CSV)", type=["csv"], accept_multiple_files=True, key=f"cmb_csv_nb1_{st.session_state.recorder_uploader_key}")
+                    if rec_csv_files and len(rec_csv_files) > 2:
+                        st.warning("⚠️ อัปโหลดเกิน 2 ไฟล์ ระบบจะประมวลผลเฉพาะ 2 ไฟล์แรกเท่านั้นเพื่อป้องกันระบบค้าง")
+                        rec_csv_files = rec_csv_files[:2]
+            elif furnace_id == "NB2":
+                st.markdown("<span style='color:#f39c12; font-size:0.85rem;'>⚠️ จำกัดจำนวนอัปโหลด: <b>ไม่เกิน 6 ไฟล์</b></span>", unsafe_allow_html=True)
+                rec_dad_files = st.file_uploader(f"Upload {furnace_id} Recorder (.DAD)", type=["dad"], accept_multiple_files=True, key=f"cmb_dad_nb2_{st.session_state.recorder_uploader_key}")
+                if rec_dad_files and len(rec_dad_files) > 6:
+                    st.warning("⚠️ อัปโหลดเกิน 6 ไฟล์ ระบบจะประมวลผลเฉพาะ 6 ไฟล์แรกเท่านั้นเพื่อป้องกันระบบค้าง")
+                    rec_dad_files = rec_dad_files[:6]
+            elif furnace_id == "NB3":
+                st.markdown("<span style='color:#f39c12; font-size:0.85rem;'>⚠️ จำกัดจำนวนอัปโหลด: <b>ไม่เกิน 6 ไฟล์</b></span>", unsafe_allow_html=True)
+                rec_csv_files = st.file_uploader(f"Upload {furnace_id} Furnace (.CSV)", type=["csv"], accept_multiple_files=True, key=f"cmb_csv_nb3_{st.session_state.recorder_uploader_key}")
+                if rec_csv_files and len(rec_csv_files) > 6:
+                    st.warning("⚠️ อัปโหลดเกิน 6 ไฟล์ ระบบจะประมวลผลเฉพาะ 6 ไฟล์แรกเท่านั้นเพื่อป้องกันระบบค้าง")
+                    rec_csv_files = rec_csv_files[:6]
+                
+            # เมนูเลือกรูปแบบการ Zoom
+            if rec_dad_files or rec_csv_files:
+                st.markdown("#### 🔍 ตั้งค่าการแสดงผลกราฟ (View & Zoom Options)")
+                zoom_mode = st.radio(
+                    "เลือกรูปแบบการซูม (Zoom Mode):",
+                    ["แสดงกราฟเต็ม (Full Range)", "ซูมอัตโนมัติทุกกราฟ (Auto-Zoom All)"],
+                    horizontal=True
+                )
+
+            # -------------------------------------
+            # Plotting Logic for Combine Mode
+            # -------------------------------------
+            # NB1 & NB2 (.DAD)
+            if rec_dad_files:
+                files_data = [(f.name, f.read()) for f in rec_dad_files]
+                machine_type, active_channels = check_machine_type([f[0] for f in files_data])
+                
+                if machine_type != furnace_id and machine_type != 'MIXED':
+                    st.error(f"❌ **ไฟล์ไม่ถูกต้อง!** คุณกำลังวิเคราะห์เตา **{furnace_id}** แต่ไฟล์ .DAD ที่อัปโหลดเป็นของเครื่อง **{machine_type}**\n\nกรุณากดปุ่ม Clear Data ขวามือ และอัปโหลดไฟล์ให้ตรงกับเตาหลัก")
+                    st.stop()
+                elif machine_type == 'MIXED':
+                    st.error('🚨 ตรวจพบการอัปโหลดไฟล์จากทั้งเครื่อง NB1 และ NB2 ปะปนกัน! กรุณากดปุ่ม Clear Data และอัปโหลดไฟล์แยกเครื่องกันครับ')
+                    st.stop()
+                    
+                data = process_dad_files(tuple((n,d) for n,d in files_data), '_max', tuple(active_channels))
+                if data:
+                    st.success("✅ Recorder files uploaded successfully! Generating Combined Overlay Charts...")
+                    fixed_y_range = [0, 650]
+                    charts_to_render = []
+                    
+                    top_chs = [ch for ch in active_channels if ch[0] in ['CH001','CH002','CH003','CH004','CH005','CH006','CH007']]
+                    fig_top = render_single_chart(data, top_chs, COLORS_TOP, f'Top Zones ({machine_type})', fixed_y_range, '°C')
+                    add_paq_overlay(fig_top, df_paq, probe_cols, invalid_cols)
+                    add_zone_backgrounds(fig_top, zones, paq_start_dt, data1['detected_start_sec'], data1['line_speed_mpm'])
+                    charts_to_render.append({"title": "1) Top Zones", "fig": fig_top})
+
+                    bot_chs = [ch for ch in active_channels if ch[0] in ['CH008','CH009','CH010','CH011','CH012','CH013','CH014']]
+                    fig_bot = render_single_chart(data, bot_chs, COLORS_BOT, f'Bottom Zones ({machine_type})', fixed_y_range, '°C')
+                    add_paq_overlay(fig_bot, df_paq, probe_cols, invalid_cols)
+                    add_zone_backgrounds(fig_bot, zones, paq_start_dt, data1['detected_start_sec'], data1['line_speed_mpm'])
+                    charts_to_render.append({"title": "2) Bottom Zones", "fig": fig_bot})
+
+                    dry_chs = [ch for ch in active_channels if ch[0] in ['CH016','CH017']]
+                    fig_dry = render_single_chart(data, dry_chs, COLORS_DRY, f'Dryer Zones ({machine_type})', fixed_y_range, '°C')
+                    add_paq_overlay(fig_dry, df_paq, probe_cols, invalid_cols)
+                    add_zone_backgrounds(fig_dry, zones, paq_start_dt, data1['detected_start_sec'], data1['line_speed_mpm'])
+                    charts_to_render.append({"title": "3) Dryer Zones", "fig": fig_dry})
+                    
+                    if machine_type == 'NB2':
+                        o2_chs = [ch for ch in active_channels if ch[0] in ['CH015', 'CH018']]
+                        fig_o2 = render_single_chart(data, o2_chs, COLORS_O2_NB2, 'O2 Concentration Level / PAQ (°C)', fixed_y_range, 'ppm', hline=100)
+                        if fig_o2: 
+                            add_paq_overlay(fig_o2, df_paq, probe_cols, invalid_cols)
+                            add_zone_backgrounds(fig_o2, zones, paq_start_dt, data1['detected_start_sec'], data1['line_speed_mpm'])
+                            charts_to_render.append({"title": "4) O2 Concentration", "fig": fig_o2})
+                    else:
+                        o2_chs = [ch for ch in active_channels if ch[0] in ['CH015', 'CH019']]
+                        n2_chs = [ch for ch in active_channels if ch[0] == 'CH018']
+                        fig_o2_n2 = render_dual_axis_chart(data, o2_chs, n2_chs, COLORS_O2_NB1, COLORS_N2, 'O2 Concentration & N2 Flow Rate', fixed_y_range, 'O2 (ppm) / PAQ (°C)', '', hline_left=100, y2_range=[0, 5000])
+                        if fig_o2_n2: 
+                            add_paq_overlay(fig_o2_n2, df_paq, probe_cols, invalid_cols, is_dual_axis=True)
+                            add_zone_backgrounds(fig_o2_n2, zones, paq_start_dt, data1['detected_start_sec'], data1['line_speed_mpm'])
+                            charts_to_render.append({"title": "4) O2 & N2 Flow", "fig": fig_o2_n2})
+                    
+                    dew_chs = [ch for ch in active_channels if ch[0] == 'CH020']
+                    fig_dew = render_single_chart(data, dew_chs, COLORS_DEW, 'Dew Point / PAQ (°C)', [-100, 650], 'Cdp')
+                    if fig_dew: 
+                        add_paq_overlay(fig_dew, df_paq, probe_cols, invalid_cols)
+                        add_zone_backgrounds(fig_dew, zones, paq_start_dt, data1['detected_start_sec'], data1['line_speed_mpm'])
+                        charts_to_render.append({"title": "5) Dew Point", "fig": fig_dew})
+                        
+                    render_combined_charts_vertically(charts_to_render, zoom_mode, zoom_x_range, "dad")
+                    
+                    st.markdown("---")
+                    st.markdown("##### 📥 Export Combined Recorder Data")
+                    # เตรียมข้อมูล Recorder
+                    df_rec = pd.DataFrame(data)
+                    if 'ts' in df_rec.columns:
+                        df_rec = df_rec.rename(columns={'ts': 'Sync_DateTime'})
+                        # รวมกับ Datapaq (แบบ outer join)
+                        df_merged = pd.merge(df_rec, df_paq[['Sync_DateTime'] + [c for c in probe_cols if c in df_paq.columns]], on='Sync_DateTime', how='outer').sort_values('Sync_DateTime')
+                        excel_bytes = to_excel_bytes(df_merged)
+                        st.download_button(label="📊 Download Combined Data (.xlsx)", data=excel_bytes, file_name="Combined_Recorder_Datapaq.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True, type="primary")
+
+            # NB1 Debinder (.CSV)
+            if rec_csv_files and furnace_id == "NB1":
+                df_deb = process_debinder_files(rec_csv_files, expected_furnace="NB1")
+                if not df_deb.empty:
+                    charts_to_render = []
+                    fig_deb = make_subplots(specs=[[{"secondary_y": True}]])
+                    zone_colors = ["#FF3333", "#1E90FF", "#2ED573", "#FF9F1A"]
+                    for i in range(1, 5):
+                        fig_deb.add_trace(go.Scatter(x=df_deb["DateTime"], y=df_deb[f"Zone #{i}"], name=f"Zone #{i} (Max)", mode="lines", line=dict(color=zone_colors[i-1], width=2)), secondary_y=False)
+                    fig_deb.add_trace(go.Scatter(x=df_deb["DateTime"], y=df_deb["Combustion Air Temp"], name="Comb Air (Max)", mode="lines", line=dict(color="#00E5FF", width=2, dash="dash")), secondary_y=True)
+                    
+                    add_paq_overlay(fig_deb, df_paq, probe_cols, invalid_cols, is_dual_axis=True)
+                    add_zone_backgrounds(fig_deb, zones, paq_start_dt, data1['detected_start_sec'], data1['line_speed_mpm'])
+                    
+                    fig_deb.update_layout(
+                        hovermode="x unified", height=450, margin=dict(l=60, r=180, t=30, b=40),
+                        yaxis=dict(range=[0, 650], title="Temperature (°C)"),
+                        yaxis2=dict(title="Comb Air (°C)", overlaying="y", side="right", range=[0, 150])
+                    )
+                    charts_to_render.append({"title": "Debinder Zones", "fig": fig_deb})
+                    
+                    render_combined_charts_vertically(charts_to_render, zoom_mode, zoom_x_range, "deb")
+                    
+                    st.markdown("---")
+                    st.markdown("##### 📥 Export Combined Debinder Data")
+                    df_deb = df_deb.rename(columns={'DateTime': 'Sync_DateTime'})
+                    df_merged = pd.merge(df_deb, df_paq[['Sync_DateTime'] + [c for c in probe_cols if c in df_paq.columns]], on='Sync_DateTime', how='outer').sort_values('Sync_DateTime')
+                    excel_bytes = to_excel_bytes(df_merged)
+                    st.download_button(label="📊 Download Combined Data (.xlsx)", data=excel_bytes, file_name="Combined_Debinder_Datapaq.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True, type="primary")
+
+            # NB3 (.CSV)
+            if rec_csv_files and furnace_id == "NB3":
+                df_nb3 = process_nb3_files(rec_csv_files, expected_furnace="NB3")
+                if not df_nb3.empty:
+                    st.success("✅ Recorder files uploaded successfully! Generating Combined Overlay Charts...")
+                    fixed_y_range = [0, 650]
+                    charts_to_render = []
+                    
+                    fig1 = go.Figure()
+                    top_colors = ["#FF0000", "#008000", "#0000FF", "#8A2BE2", "#A52A2A", "#FFA500", "#9ACD32"]
+                    for i in range(1, 8):
+                        if f"Top Zone #{i}" in df_nb3.columns:
+                            fig1.add_trace(go.Scatter(x=df_nb3["DateTime"], y=df_nb3[f"Top Zone #{i}"], name=f"Top Zone #{i}", mode="lines", line=dict(color=top_colors[i-1], width=2)))
+                    add_paq_overlay(fig1, df_paq, probe_cols, invalid_cols)
+                    apply_industrial_style(fig1, "Temperature (°C)", y_range=fixed_y_range)
+                    add_zone_backgrounds(fig1, zones, paq_start_dt, data1['detected_start_sec'], data1['line_speed_mpm'])
+                    charts_to_render.append({"title": "1) Top Zones", "fig": fig1})
+
+                    fig2 = go.Figure()
+                    bottom_colors = ["#00BFFF", "#FF1493", "#808080", "#00FF00", "#008000", "#0000FF", "#8A2BE2"]
+                    for i in range(1, 8):
+                        if f"Bottom Zone #{i}" in df_nb3.columns:
+                            fig2.add_trace(go.Scatter(x=df_nb3["DateTime"], y=df_nb3[f"Bottom Zone #{i}"], name=f"Bottom Zone #{i}", mode="lines", line=dict(color=bottom_colors[i-1], width=2)))
+                    add_paq_overlay(fig2, df_paq, probe_cols, invalid_cols)
+                    apply_industrial_style(fig2, "Temperature (°C)", y_range=fixed_y_range)
+                    add_zone_backgrounds(fig2, zones, paq_start_dt, data1['detected_start_sec'], data1['line_speed_mpm'])
+                    charts_to_render.append({"title": "2) Bottom Zones", "fig": fig2})
+
+                    fig3 = go.Figure()
+                    dry_colors = ["#FFA500", "#9ACD32", "#008B8B"]
+                    dryoff_names = ["DRYOFF1", "DRYOFF2", "DRYOFF3"]
+                    for i in range(1, 4):
+                        if dryoff_names[i-1] in df_nb3.columns:
+                            fig3.add_trace(go.Scatter(x=df_nb3["DateTime"], y=df_nb3[dryoff_names[i-1]], name=dryoff_names[i-1], mode="lines", line=dict(color=dry_colors[i-1], width=2)))
+                    add_paq_overlay(fig3, df_paq, probe_cols, invalid_cols)
+                    apply_industrial_style(fig3, "Temperature (°C)", y_range=fixed_y_range)
+                    add_zone_backgrounds(fig3, zones, paq_start_dt, data1['detected_start_sec'], data1['line_speed_mpm'])
+                    charts_to_render.append({"title": "3) DRYOFF", "fig": fig3})
+                    
+                    fig4 = make_subplots(specs=[[{"secondary_y": True}]])
+                    if "Oxygen EXIT" in df_nb3.columns:
+                        fig4.add_trace(go.Scatter(x=df_nb3["DateTime"], y=df_nb3["Oxygen EXIT"], name="Oxygen EXIT", mode="lines", line=dict(color="#FF00FF", width=2)), secondary_y=False)
+                    if "Oxygen ENTRANCE" in df_nb3.columns:
+                        fig4.add_trace(go.Scatter(x=df_nb3["DateTime"], y=df_nb3["Oxygen ENTRANCE"], name="Oxygen ENTRANCE", mode="lines", line=dict(color="#A52A2A", width=2)), secondary_y=False)
+                    if "N2 Exit" in df_nb3.columns:
+                        fig4.add_trace(go.Scatter(x=df_nb3["DateTime"], y=df_nb3["N2 Exit"], name="N2 Exit", mode="lines", line=dict(color="#1f77b4", width=2, dash="dash")), secondary_y=True)
+                    if "N2 Entrance" in df_nb3.columns:
+                        fig4.add_trace(go.Scatter(x=df_nb3["DateTime"], y=df_nb3["N2 Entrance"], name="N2 Entrance", mode="lines", line=dict(color="#2ca02c", width=2, dash="dash")), secondary_y=True)
+                    
+                    add_paq_overlay(fig4, df_paq, probe_cols, invalid_cols, is_dual_axis=True)
+                    apply_industrial_style(fig4, "Oxygen (ppm) / PAQ (°C)", is_dual_axis=True)
+                    fig4.update_layout(yaxis=dict(title=dict(text="Oxygen (ppm) / PAQ (°C)"), range=[0, 650], showgrid=True), yaxis2=dict(title=dict(text="N2 Flow Rate [0-1000]"), showgrid=False, overlaying="y", side="right", range=[0, 1000]))
+                    add_zone_backgrounds(fig4, zones, paq_start_dt, data1['detected_start_sec'], data1['line_speed_mpm'])
+                    charts_to_render.append({"title": "4) O2 & N2 Flow", "fig": fig4})
+
+                    fig5 = go.Figure()
+                    if "COOL WATER TEMP" in df_nb3.columns:
+                        fig5.add_trace(go.Scatter(x=df_nb3["DateTime"], y=df_nb3["COOL WATER TEMP"], name="COOL WATER TEMP", mode="lines", line=dict(color="#008B8B", width=2)))
+                    add_paq_overlay(fig5, df_paq, probe_cols, invalid_cols)
+                    apply_industrial_style(fig5, "Temperature (°C)", y_range=[-150, 650])
+                    add_zone_backgrounds(fig5, zones, paq_start_dt, data1['detected_start_sec'], data1['line_speed_mpm'])
+                    charts_to_render.append({"title": "5) COOL WATER", "fig": fig5})
+                    
+                    render_combined_charts_vertically(charts_to_render, zoom_mode, zoom_x_range, "nb3")
+                    
+                    st.markdown("---")
+                    st.markdown("##### 📥 Export Combined Recorder Data")
+                    df_nb3 = df_nb3.rename(columns={'DateTime': 'Sync_DateTime'})
+                    df_merged = pd.merge(df_nb3, df_paq[['Sync_DateTime'] + [c for c in probe_cols if c in df_paq.columns]], on='Sync_DateTime', how='outer').sort_values('Sync_DateTime')
+                    excel_bytes = to_excel_bytes(df_merged)
+                    st.download_button(label="📊 Download Combined Data (.xlsx)", data=excel_bytes, file_name="Combined_NB3_Datapaq.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True, type="primary")
