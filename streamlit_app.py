@@ -109,14 +109,34 @@ FURNACE_CONFIGS = {
 }
 
 # ==============================================================================
+# RECORDER STANDARDS MIN/MAX CONFIGURATIONS
+# ==============================================================================
+RECORDER_STANDARDS = {
+    "NB1": {
+        "Top": [(577, 587), (609, 619), (613, 623), (616, 626), (613, 623), (609, 619), (609, 615)],
+        "Bottom": [(601, 611), (611, 621), (615, 625), (618, 628), (615, 625), (611, 621), (609, 615)],
+        "Dryer": [(225, 255), (245, 275)],
+        "Debinder": [(265, 295), (290, 320), (320, 350), (335, 365)]
+    },
+    "NB2": {
+        "Top": [(585, 595), (609, 619), (613, 623), (614, 624), (612, 622), (606, 616), (606, 612)],
+        "Bottom": [(585, 595), (609, 619), (613, 623), (614, 624), (612, 622), (606, 616), (606, 612)],
+        "Dryer": [(295, 325), (325, 355)],
+        "Debinder": []
+    },
+    "NB3": {
+        "Top": [(598, 608), (609, 619), (618, 628), (624, 634), (618, 628), (616, 626), (611, 617)], 
+        "Bottom": [(603, 613), (614, 624), (621, 631), (624, 634), (623, 633), (621, 631), (616, 622)],
+        "Dryer": [(300, 330), (315, 345), (320, 350)],
+        "Debinder": []
+    }
+}
+
+# ==============================================================================
 # DATAPAQ .PAQ UTILITY FUNCTIONS
 # ==============================================================================
 
 def extract_paq_collection_started(file_bytes):
-    """
-    ฟังก์ชันเจาะลึกเพื่อสกัดเอาค่า Collection Started ที่ซ่อนอยู่ใน ZLIB ของ OLE ไฟล์
-    โดยแปลงจาก Delphi TDateTime (64-bit float) กลับมาเป็น Timestamp จริง
-    """
     epoch = datetime(1899, 12, 30)
     try:
         decompressed_buffers = []
@@ -133,7 +153,6 @@ def extract_paq_collection_started(file_bytes):
                 decompressed_buffers.append(zlib.decompress(b'\x78\x9c' + part))
             except: pass
 
-        # Strategy 1: Search near CTriggerQuantity
         for buf in decompressed_buffers:
             idx = buf.find(b'CTriggerQuantity')
             if idx != -1:
@@ -147,7 +166,6 @@ def extract_paq_collection_started(file_bytes):
                                 return dt
                     except: pass
 
-        # Strategy 2: Search near CLogger
         for buf in decompressed_buffers:
             idx = buf.find(b'CLogger')
             if idx != -1:
@@ -161,7 +179,6 @@ def extract_paq_collection_started(file_bytes):
                                 return dt
                     except: pass
 
-        # Strategy 3: Global median-filtered minimum
         valid_times = []
         for buf in decompressed_buffers:
             for i in range(len(buf) - 8):
@@ -235,7 +252,6 @@ def style_inspection_matrix(row, variant, check_dryer_max=False):
     return styles
 
 def highlight_row_by_group(row):
-    """ฟังก์ชันระบายสีพื้นหลังทั้งแถว (Row) ในตาราง Zone Statistics อ้างอิงตาม Group"""
     bg_color = GROUP_COLORS.get(row["Group"], "")
     if bg_color:
         return [f"background-color: {bg_color}"] * len(row)
@@ -373,21 +389,18 @@ def process_paq_file(file_bytes, filename):
     ole_bytes = io.BytesIO(file_bytes)
     ole = olefile.OleFileIO(ole_bytes)
     
-    # 1. พยายามดึง Collection Started จากระดับไบนารี OLE โดยตรง (แม่นยำที่สุด)
     real_start_dt = extract_paq_collection_started(file_bytes)
     
     extracted_date = pd.Timestamp.now().date()
     extracted_time_str = "00:00:00"
     date_found = False
 
-    # หากดึงจากไบนารีสำเร็จ ให้ใช้ค่านี้เป็นความจริงหลักทันที
     if real_start_dt:
         extracted_date = real_start_dt.date()
         extracted_time_str = real_start_dt.strftime("%I:%M:%S %p")
         date_found = True
         process_start_dt_str = real_start_dt.strftime('%Y-%m-%d <br> %H:%M:%S')
     else:
-        # Fallback กรณีที่หาไม่เจอ (ใช้วิธีดั้งเดิมจากชื่อไฟล์หรือ mtime)
         m_ymd = re.search(r'(20[1-3]\d)(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])', filename)
         m_y_m_d = re.search(r'(20[1-3]\d)[-_](0[1-9]|1[0-2])[-_](0[1-9]|[12]\d|3[01])', filename)
         m_d_m_y = re.search(r'(0[1-9]|[12]\d|3[01])[-_](0[1-9]|1[0-2])[-_](20[1-3]\d)', filename)
@@ -436,7 +449,6 @@ def process_paq_file(file_bytes, filename):
             for m in ascii_matches: raw_texts.append(m.decode('ascii', errors='ignore').strip())
         except: continue
 
-    # ถ้าไม่มีเวลาจริงๆ ค่อยไปควานหาจาก Text (แต่ส่วนมากจะผ่านจาก ZLIB แล้ว)
     if not real_start_dt:
         for s in raw_texts:
             if not date_found:
@@ -1150,19 +1162,11 @@ def process_debinder_files(uploaded_files, expected_furnace=None):
     return full_df
 
 def extract_csv_start_time(df, condition_cols, threshold=60.0, sustained_duration=5):
-    """
-    Extract the start time from a DataFrame based on a temperature threshold.
-    """
     if df is None or df.empty or not condition_cols:
         return None
         
-    # Check if any specified column is >= threshold
     condition = df[condition_cols].ge(threshold).any(axis=1)
-    
-    # Calculate rolling sum to find sustained periods
     rolling_sum = condition.rolling(window=sustained_duration, min_periods=sustained_duration).sum()
-    
-    # Find the first index where the rolling sum equals sustained_duration
     start_indices = rolling_sum[rolling_sum == sustained_duration].index
     
     if len(start_indices) > 0:
@@ -1282,13 +1286,18 @@ def process_nb3_files(uploaded_files, expected_furnace=None):
 # ==============================================================================
 # RECORDER CHART RENDERING UTILITIES
 # ==============================================================================
-def render_single_chart(data, ch_list, colors_ref, title, y_range, y_title, hline=None):
+def render_single_chart(data, ch_list, colors_ref, title, y_range, y_title, hline=None, std_min=None, std_max=None):
     if not ch_list: return None
     fig = go.Figure()
     ts = [r['ts'] for r in data]
     for i, (ch, name, unit) in enumerate(ch_list):
         color = colors_ref[i] if isinstance(colors_ref, list) else colors_ref.get(ch, '#888')
         fig.add_trace(go.Scatter(x=ts, y=[r.get(ch) for r in data], name=name, mode='lines', line=dict(color=color, width=1.5), hovertemplate=f'<b>{name}</b>: %{{y:.1f}} {unit}<extra></extra>' if unit else f'<b>{name}</b>: %{{y:.1f}}<extra></extra>'))
+    
+    if std_min is not None and std_max is not None:
+        fig.add_trace(go.Scatter(x=[ts[0], ts[-1]], y=[std_max, std_max], name=f"Std Max ({std_max})", mode='lines', line=dict(color="red", width=1.5, dash="dash"), visible=True))
+        fig.add_trace(go.Scatter(x=[ts[0], ts[-1]], y=[std_min, std_min], name=f"Std Min ({std_min})", mode='lines', line=dict(color="blue", width=1.5, dash="dash"), visible=True))
+        
     if hline is not None:
         fig.add_hline(y=hline, line_dash="dash", line_color="#FF4B4B", line_width=1.5, annotation_text=f"Standard {hline} {y_title}", annotation_position="bottom right", annotation_font=dict(color="#FF4B4B", size=12))
     fig.update_layout(title=dict(text=title, font=dict(size=18, weight="bold")), height=450, hovermode='x unified', hoverlabel=dict(font_size=12, namelength=30), legend=dict(title="Channels", orientation="v", yanchor="middle", y=0.5, xanchor="left", x=1.02, font=dict(size=12), itemsizing='constant'), margin=dict(l=60, r=150, t=60, b=40))
@@ -1314,7 +1323,7 @@ def render_dual_axis_chart(data, ch_left, ch_right, colors_left, colors_right, t
     fig.update_xaxes(tickformat='%d/%m\n%H:%M', tickfont=dict(size=11), showticklabels=True)
     return fig
 
-def apply_industrial_style(fig, y_title, y_range=None, is_dual_axis=False):
+def apply_industrial_style(fig, y_title, y_range=None, is_dual_axis=False, std_min=None, std_max=None, ts=None):
     layout_args = dict(
         hovermode="x unified", showlegend=True,
         legend=dict(orientation="v", yanchor="top", y=1, xanchor="left", x=1.02),
@@ -1324,6 +1333,10 @@ def apply_industrial_style(fig, y_title, y_range=None, is_dual_axis=False):
     )
     if y_range and not is_dual_axis: layout_args["yaxis"]["range"] = y_range
     fig.update_layout(**layout_args)
+    if std_min is not None and std_max is not None and ts is not None and len(ts) > 0:
+        fig.add_trace(go.Scatter(x=[ts[0], ts.iloc[-1]], y=[std_max, std_max], name=f"Std Max ({std_max})", mode='lines', line=dict(color="red", width=1.5, dash="dash"), visible=True))
+        fig.add_trace(go.Scatter(x=[ts[0], ts.iloc[-1]], y=[std_min, std_min], name=f"Std Min ({std_min})", mode='lines', line=dict(color="blue", width=1.5, dash="dash"), visible=True))
+
 
 def add_paq_overlay(fig, df_paq, probe_cols, invalid_cols, is_dual_axis=False):
     for col in probe_cols:
@@ -1402,7 +1415,6 @@ with st.sidebar:
         st.rerun()
     uploaded_file1 = st.file_uploader("Upload Main .PAQ File", type=["paq"], key=f"paq1_{st.session_state.paq1_uploader_key}")
 
-    # ใช้งานตัวแปร data1 เพื่อหลีกเลี่ยง NameError เมื่อเข้าสู่โหมดต่างๆ
     data1 = None
     if uploaded_file1:
         data1 = process_paq_file(uploaded_file1.getvalue(), uploaded_file1.name)
@@ -1715,7 +1727,6 @@ with tabs[0]:
             fig2.update_layout(title=f"INDIVIDUALLY ALIGNED PROFILES ({f_variant}): {data1['filename']}", xaxis=dict(title="Individual Probe Distance (Meters from Probe's 60°C Entry)", range=[-1, total_furnace_length + 2]), yaxis_title="Temperature (°C)", hovermode="x unified", template="plotly_white", height=550)
             st.plotly_chart(fig2, use_container_width=True)
 
-        # ย้าย Data Export & Download มาไว้ด้านล่างสุดของ Tab แรก
         st.markdown("---")
         st.subheader("💾 Data Export & Download")
         st.write("เลือกรูปแบบข้อมูลที่ต้องการดาวน์โหลด (Select the data format to download):")
@@ -1739,7 +1750,6 @@ with tabs[0]:
                 
         df_single_row = pd.DataFrame([row_data])
 
-        # จัด 2 คอลัมน์กว้างเท่ากัน เพื่อความสวยงาม
         col1, col2 = st.columns(2)
         with col1:
             st.markdown("#### 📊 1. Analysis Report")
@@ -1753,7 +1763,6 @@ with tabs[0]:
                     pd.DataFrame(matrix_rows).to_excel(writer, sheet_name="Inspection_Matrix", index=False)
                 st.download_button(label="📥 Download Report (.xlsx)", data=buffer_report.getvalue(), file_name=f"{os.path.splitext(data1['filename'])[0]}_Report.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
             elif report_format == "CSV (.csv)":
-                # สำหรับ CSV รวมข้อมูลเบื้องต้นและ Matrix ไปในไฟล์เดียว
                 csv_data = pd.concat([df_single_row, pd.DataFrame(matrix_rows)], axis=0).to_csv(index=False).encode('utf-8')
                 st.download_button(label="📥 Download Report (.csv)", data=csv_data, file_name=f"{os.path.splitext(data1['filename'])[0]}_Report.csv", mime="text/csv", use_container_width=True)
                 
@@ -1842,7 +1851,6 @@ with tabs[1]:
                 
                 st.plotly_chart(fig_comp, use_container_width=True)
                 
-                # นำข้อมูลทั้ง 2 ไฟล์มารวมกันแล้วสร้างปุ่มดาวน์โหลด
                 st.markdown("---")
                 st.markdown("##### 📥 Export Compare Data")
                 df_comp1 = df_m1[['Distance_Meters'] + [c for c in probe_cols if c in df_m1.columns]].copy()
@@ -1850,7 +1858,6 @@ with tabs[1]:
                 df_comp1.columns = ['Distance_Meters'] + [f"F1_{c}" for c in df_comp1.columns if c != 'Distance_Meters']
                 df_comp2.columns = ['Distance_Meters'] + [f"F2_{c}" for c in df_comp2.columns if c != 'Distance_Meters']
                 
-                # Merge based on closest Distance_Meters (rounded to 2 decimal places to help matching)
                 df_comp1['Merge_Dist'] = df_comp1['Distance_Meters'].round(2)
                 df_comp2['Merge_Dist'] = df_comp2['Distance_Meters'].round(2)
                 df_merged = pd.merge(df_comp1, df_comp2, on='Merge_Dist', how='outer').sort_values('Merge_Dist')
@@ -1887,7 +1894,6 @@ with tabs[2]:
         with col_title:
             st.markdown("### 📁 Upload Recorder Data (Standalone Mode)")
         with col_clear:
-            # ย้ายปุ่ม Clear ให้ตรงกับระดับหัวข้อหลัก
             st.markdown("<div style='margin-top: 5px;'></div>", unsafe_allow_html=True)
             if st.button("🗑️ Clear Data", key="clear_recorder_btn", use_container_width=True):
                 st.session_state.recorder_uploader_key += 1
@@ -1923,17 +1929,40 @@ with tabs[2]:
                         
                         tb_y_range = [540, 650] if machine_type == 'NB1' else [400, 650]
                         top_chs = [ch for ch in active_channels if ch[0] in ['CH001','CH002','CH003','CH004','CH005','CH006','CH007']]
-                        fig_top = render_single_chart(data, top_chs, COLORS_TOP, f'Top Zones Temperature ({machine_type})', tb_y_range, '°C')
-                        if fig_top: st.plotly_chart(fig_top, use_container_width=True)
-
                         bot_chs = [ch for ch in active_channels if ch[0] in ['CH008','CH009','CH010','CH011','CH012','CH013','CH014']]
-                        fig_bot = render_single_chart(data, bot_chs, COLORS_BOT, f'Bottom Zones Temperature ({machine_type})', tb_y_range, '°C')
-                        if fig_bot: st.plotly_chart(fig_bot, use_container_width=True)
-
                         dry_chs = [ch for ch in active_channels if ch[0] in ['CH016','CH017']]
                         dry_y_range = [150, 350] if machine_type == 'NB1' else [150, 400]
-                        fig_dry = render_single_chart(data, dry_chs, COLORS_DRY, f'Dryer Zones Temperature ({machine_type})', dry_y_range, '°C')
-                        if fig_dry: st.plotly_chart(fig_dry, use_container_width=True)
+                        
+                        split_charts = st.toggle("📊 แยกกราฟ Top / Bottom / Dryer เป็นรายโซนย่อย (Split Zone Charts)", key="split_std_dad")
+                        
+                        if split_charts:
+                            st.markdown("#### Top Zones (แยกรายโซน)")
+                            for i, ch in enumerate(top_chs):
+                                std_min, std_max = RECORDER_STANDARDS.get(machine_type, {}).get("Top", [None]*7)[i] if i < 7 else (None, None)
+                                fig_top = render_single_chart(data, [ch], [COLORS_TOP[i % len(COLORS_TOP)]], f'{ch[1]} ({machine_type})', tb_y_range, '°C', std_min=std_min, std_max=std_max)
+                                if fig_top: st.plotly_chart(fig_top, use_container_width=True)
+                                
+                            st.markdown("#### Bottom Zones (แยกรายโซน)")
+                            for i, ch in enumerate(bot_chs):
+                                std_min, std_max = RECORDER_STANDARDS.get(machine_type, {}).get("Bottom", [None]*7)[i] if i < 7 else (None, None)
+                                fig_bot = render_single_chart(data, [ch], [COLORS_BOT[i % len(COLORS_BOT)]], f'{ch[1]} ({machine_type})', tb_y_range, '°C', std_min=std_min, std_max=std_max)
+                                if fig_bot: st.plotly_chart(fig_bot, use_container_width=True)
+                                
+                            st.markdown("#### Dryer Zones (แยกรายโซน)")
+                            for i, ch in enumerate(dry_chs):
+                                std_min, std_max = RECORDER_STANDARDS.get(machine_type, {}).get("Dryer", [None]*3)[i] if i < 3 else (None, None)
+                                c_color = COLORS_DRY.get(ch[0], '#FFA500')
+                                fig_dry = render_single_chart(data, [ch], {ch[0]: c_color}, f'{ch[1]} ({machine_type})', dry_y_range, '°C', std_min=std_min, std_max=std_max)
+                                if fig_dry: st.plotly_chart(fig_dry, use_container_width=True)
+                        else:
+                            fig_top = render_single_chart(data, top_chs, COLORS_TOP, f'Top Zones Temperature ({machine_type})', tb_y_range, '°C')
+                            if fig_top: st.plotly_chart(fig_top, use_container_width=True)
+
+                            fig_bot = render_single_chart(data, bot_chs, COLORS_BOT, f'Bottom Zones Temperature ({machine_type})', tb_y_range, '°C')
+                            if fig_bot: st.plotly_chart(fig_bot, use_container_width=True)
+
+                            fig_dry = render_single_chart(data, dry_chs, COLORS_DRY, f'Dryer Zones Temperature ({machine_type})', dry_y_range, '°C')
+                            if fig_dry: st.plotly_chart(fig_dry, use_container_width=True)
                         
                         if machine_type == 'NB2':
                             o2_chs = [ch for ch in active_channels if ch[0] in ['CH015', 'CH018']]
@@ -1946,7 +1975,7 @@ with tabs[2]:
                             if fig_o2_n2: st.plotly_chart(fig_o2_n2, use_container_width=True)
                             
                             dew_chs = [ch for ch in active_channels if ch[0] == 'CH020']
-                            fig_dew = render_single_chart(data, dew_chs, COLORS_DEW, 'Dew Point', [-100, 10], 'Cdp')
+                            fig_dew = render_single_chart(data, dew_chs, COLORS_DEW, 'Dew Point', [-100, 10], 'Cdp', hline=-40)
                             if fig_dew: 
                                 fig_dew.update_layout(yaxis=dict(range=[-100, 10], autorange=False, title_text='Cdp'))
                                 st.plotly_chart(fig_dew, use_container_width=True)
@@ -1964,40 +1993,70 @@ with tabs[2]:
             if uploaded_rec_files:
                 df_nb3 = process_nb3_files(uploaded_rec_files)
                 if not df_nb3.empty:
-                    # 1. แสดงเวลาที่เริ่มต้นกระบวนการ (Zone 1 หรือ Zone 2 อุณหภูมิเกิน 60°C ต่อเนื่อง)
                     start_time_nb3 = extract_csv_start_time(df_nb3, ["Top Zone #1", "Top Zone #2", "Bottom Zone #1", "Bottom Zone #2"])
                     if start_time_nb3 is not None:
                         st.success(f"✓ โหลดข้อมูล {len(df_nb3)} แถว สำเร็จ (ช่วงเวลา: {df_nb3['DateTime'].min()} ถึง {df_nb3['DateTime'].max()})\n\n**Process Started at:** {start_time_nb3}")
                     else:
                         st.success(f"✓ โหลดข้อมูล {len(df_nb3)} แถว สำเร็จ (ช่วงเวลา: {df_nb3['DateTime'].min()} ถึง {df_nb3['DateTime'].max()})")
                     
-                    st.markdown("##### 1) Top Zone Temperature (#1 to #7)")
-                    fig1 = go.Figure()
+                    split_charts = st.toggle("📊 แยกกราฟ Top / Bottom / Dryer เป็นรายโซนย่อย (Split Zone Charts)", key="split_std_nb3_csv")
+                    
                     top_colors = ["#FF0000", "#008000", "#0000FF", "#8A2BE2", "#A52A2A", "#FFA500", "#9ACD32"]
-                    for i in range(1, 8):
-                        if f"Top Zone #{i}" in df_nb3.columns:
-                            fig1.add_trace(go.Scatter(x=df_nb3["DateTime"], y=df_nb3[f"Top Zone #{i}"], name=f"Top Zone #{i}", mode="lines", line=dict(color=top_colors[i-1], width=2)))
-                    apply_industrial_style(fig1, "Temperature (°C)")
-                    st.plotly_chart(fig1, use_container_width=True)
-
-                    st.markdown("##### 2) Bottom Zone Temperature (#1 to #7)")
-                    fig2 = go.Figure()
                     bottom_colors = ["#00BFFF", "#FF1493", "#808080", "#00FF00", "#008000", "#0000FF", "#8A2BE2"]
-                    for i in range(1, 8):
-                        if f"Bottom Zone #{i}" in df_nb3.columns:
-                            fig2.add_trace(go.Scatter(x=df_nb3["DateTime"], y=df_nb3[f"Bottom Zone #{i}"], name=f"Bottom Zone #{i}", mode="lines", line=dict(color=bottom_colors[i-1], width=2)))
-                    apply_industrial_style(fig2, "Temperature (°C)")
-                    st.plotly_chart(fig2, use_container_width=True)
-
-                    st.markdown("##### 3) DRYOFF Temperature")
-                    fig3 = go.Figure()
                     dry_colors = ["#FFA500", "#9ACD32", "#008B8B"]
                     dryoff_names = ["DRYOFF1", "DRYOFF2", "DRYOFF3"]
-                    for i in range(1, 4):
-                        if dryoff_names[i-1] in df_nb3.columns:
-                            fig3.add_trace(go.Scatter(x=df_nb3["DateTime"], y=df_nb3[dryoff_names[i-1]], name=dryoff_names[i-1], mode="lines", line=dict(color=dry_colors[i-1], width=2)))
-                    apply_industrial_style(fig3, "Temperature (°C)")
-                    st.plotly_chart(fig3, use_container_width=True)
+
+                    if split_charts:
+                        st.markdown("##### 1) Top Zones (แยกรายโซน)")
+                        for i in range(1, 8):
+                            if f"Top Zone #{i}" in df_nb3.columns:
+                                std_min, std_max = RECORDER_STANDARDS["NB3"]["Top"][i-1] if i-1 < len(RECORDER_STANDARDS["NB3"]["Top"]) else (None, None)
+                                fig = go.Figure()
+                                fig.add_trace(go.Scatter(x=df_nb3["DateTime"], y=df_nb3[f"Top Zone #{i}"], name=f"Top Zone #{i}", mode="lines", line=dict(color=top_colors[i-1], width=2)))
+                                apply_industrial_style(fig, "Temperature (°C)", std_min=std_min, std_max=std_max, ts=df_nb3["DateTime"])
+                                st.plotly_chart(fig, use_container_width=True)
+
+                        st.markdown("##### 2) Bottom Zones (แยกรายโซน)")
+                        for i in range(1, 8):
+                            if f"Bottom Zone #{i}" in df_nb3.columns:
+                                std_min, std_max = RECORDER_STANDARDS["NB3"]["Bottom"][i-1] if i-1 < len(RECORDER_STANDARDS["NB3"]["Bottom"]) else (None, None)
+                                fig = go.Figure()
+                                fig.add_trace(go.Scatter(x=df_nb3["DateTime"], y=df_nb3[f"Bottom Zone #{i}"], name=f"Bottom Zone #{i}", mode="lines", line=dict(color=bottom_colors[i-1], width=2)))
+                                apply_industrial_style(fig, "Temperature (°C)", std_min=std_min, std_max=std_max, ts=df_nb3["DateTime"])
+                                st.plotly_chart(fig, use_container_width=True)
+
+                        st.markdown("##### 3) DRYOFF (แยกรายโซน)")
+                        for i in range(1, 4):
+                            if dryoff_names[i-1] in df_nb3.columns:
+                                std_min, std_max = RECORDER_STANDARDS["NB3"]["Dryer"][i-1] if i-1 < len(RECORDER_STANDARDS["NB3"]["Dryer"]) else (None, None)
+                                fig = go.Figure()
+                                fig.add_trace(go.Scatter(x=df_nb3["DateTime"], y=df_nb3[dryoff_names[i-1]], name=dryoff_names[i-1], mode="lines", line=dict(color=dry_colors[i-1], width=2)))
+                                apply_industrial_style(fig, "Temperature (°C)", std_min=std_min, std_max=std_max, ts=df_nb3["DateTime"])
+                                st.plotly_chart(fig, use_container_width=True)
+                    else:
+                        st.markdown("##### 1) Top Zone Temperature (#1 to #7)")
+                        fig1 = go.Figure()
+                        for i in range(1, 8):
+                            if f"Top Zone #{i}" in df_nb3.columns:
+                                fig1.add_trace(go.Scatter(x=df_nb3["DateTime"], y=df_nb3[f"Top Zone #{i}"], name=f"Top Zone #{i}", mode="lines", line=dict(color=top_colors[i-1], width=2)))
+                        apply_industrial_style(fig1, "Temperature (°C)")
+                        st.plotly_chart(fig1, use_container_width=True)
+
+                        st.markdown("##### 2) Bottom Zone Temperature (#1 to #7)")
+                        fig2 = go.Figure()
+                        for i in range(1, 8):
+                            if f"Bottom Zone #{i}" in df_nb3.columns:
+                                fig2.add_trace(go.Scatter(x=df_nb3["DateTime"], y=df_nb3[f"Bottom Zone #{i}"], name=f"Bottom Zone #{i}", mode="lines", line=dict(color=bottom_colors[i-1], width=2)))
+                        apply_industrial_style(fig2, "Temperature (°C)")
+                        st.plotly_chart(fig2, use_container_width=True)
+
+                        st.markdown("##### 3) DRYOFF Temperature")
+                        fig3 = go.Figure()
+                        for i in range(1, 4):
+                            if dryoff_names[i-1] in df_nb3.columns:
+                                fig3.add_trace(go.Scatter(x=df_nb3["DateTime"], y=df_nb3[dryoff_names[i-1]], name=dryoff_names[i-1], mode="lines", line=dict(color=dry_colors[i-1], width=2)))
+                        apply_industrial_style(fig3, "Temperature (°C)")
+                        st.plotly_chart(fig3, use_container_width=True)
 
                     st.markdown("##### 4) Oxygen EXIT/ENTRANCE & N2 Flow")
                     fig4 = make_subplots(specs=[[{"secondary_y": True}]])
@@ -2033,25 +2092,41 @@ with tabs[2]:
             if uploaded_rec_files:
                 df_deb = process_debinder_files(uploaded_rec_files)
                 if not df_deb.empty:
-                    # 1. แสดงเวลาที่เริ่มต้นกระบวนการ (Zone 1 หรือ Zone 2 อุณหภูมิเกิน 60°C ต่อเนื่อง)
                     start_time_deb = extract_csv_start_time(df_deb, ["Zone #1", "Zone #2"])
                     if start_time_deb is not None:
                         st.success(f"✓ โหลดข้อมูล {len(df_deb)} แถว สำเร็จ (ช่วงเวลา: {df_deb['DateTime'].min()} ถึง {df_deb['DateTime'].max()})\n\n**Process Started at:** {start_time_deb}")
                     else:
                         st.success(f"✓ โหลดข้อมูล {len(df_deb)} แถว สำเร็จ (ช่วงเวลา: {df_deb['DateTime'].min()} ถึง {df_deb['DateTime'].max()})")
                     
-                    fig = make_subplots(specs=[[{"secondary_y": True}]])
+                    split_charts = st.toggle("📊 แยกกราฟเป็นรายโซนย่อย (Split Zone Charts)", key="split_std_deb_csv")
                     zone_colors = ["#FF3333", "#1E90FF", "#2ED573", "#FF9F1A"]
-                    for i in range(1, 5):
-                        fig.add_trace(go.Scatter(x=df_deb["DateTime"], y=df_deb[f"Zone #{i}"], name=f"Zone #{i} (Max)", mode="lines", line=dict(color=zone_colors[i-1], width=2)), secondary_y=False)
-                    fig.add_trace(go.Scatter(x=df_deb["DateTime"], y=df_deb["Combustion Air Temp"], name="Comb Air (Max)", mode="lines", line=dict(color="#00E5FF", width=2, dash="dash")), secondary_y=True)
                     
-                    fig.update_layout(
-                        hovermode="x unified", height=450, margin=dict(l=60, r=180, t=30, b=40),
-                        yaxis=dict(range=[0, 400], title="Temperature (°C)"),
-                        yaxis2=dict(title="Comb Air (°C)", overlaying="y", side="right", range=[0, 150])
-                    )
-                    st.plotly_chart(fig, use_container_width=True)
+                    if split_charts:
+                        st.markdown("##### Debinder Zones (แยกรายโซน)")
+                        for i in range(1, 5):
+                            std_min, std_max = RECORDER_STANDARDS["NB1"]["Debinder"][i-1] if i-1 < len(RECORDER_STANDARDS["NB1"]["Debinder"]) else (None, None)
+                            fig = go.Figure()
+                            fig.add_trace(go.Scatter(x=df_deb["DateTime"], y=df_deb[f"Zone #{i}"], name=f"Zone #{i} (Max)", mode="lines", line=dict(color=zone_colors[i-1], width=2)))
+                            apply_industrial_style(fig, "Temperature (°C)", y_range=[0, 400], std_min=std_min, std_max=std_max, ts=df_deb["DateTime"])
+                            st.plotly_chart(fig, use_container_width=True)
+                            
+                        st.markdown("##### Combustion Air Temp")
+                        fig_comb = go.Figure()
+                        fig_comb.add_trace(go.Scatter(x=df_deb["DateTime"], y=df_deb["Combustion Air Temp"], name="Comb Air (Max)", mode="lines", line=dict(color="#00E5FF", width=2, dash="dash")))
+                        apply_industrial_style(fig_comb, "Comb Air (°C)", y_range=[0, 150])
+                        st.plotly_chart(fig_comb, use_container_width=True)
+                    else:
+                        fig = make_subplots(specs=[[{"secondary_y": True}]])
+                        for i in range(1, 5):
+                            fig.add_trace(go.Scatter(x=df_deb["DateTime"], y=df_deb[f"Zone #{i}"], name=f"Zone #{i} (Max)", mode="lines", line=dict(color=zone_colors[i-1], width=2)), secondary_y=False)
+                        fig.add_trace(go.Scatter(x=df_deb["DateTime"], y=df_deb["Combustion Air Temp"], name="Comb Air (Max)", mode="lines", line=dict(color="#00E5FF", width=2, dash="dash")), secondary_y=True)
+                        
+                        fig.update_layout(
+                            hovermode="x unified", height=450, margin=dict(l=60, r=180, t=30, b=40),
+                            yaxis=dict(range=[0, 400], title="Temperature (°C)"),
+                            yaxis2=dict(title="Comb Air (°C)", overlaying="y", side="right", range=[0, 150])
+                        )
+                        st.plotly_chart(fig, use_container_width=True)
                     
                     st.markdown("---")
                     st.markdown("##### 📥 Export Recorder Data")
@@ -2089,7 +2164,6 @@ with tabs[2]:
                 st.text_input("Furnace (อ้างอิงจากไฟล์หลัก)", value=furnace_id, disabled=True)
 
             try:
-                # ลองแปลงด้วย pandas เพื่อรองรับรูปแบบ 12H (AM/PM) และ 24H
                 parsed_time = pd.to_datetime(edited_start_time).time()
                 paq_start_dt = datetime.combine(edited_start_date, parsed_time)
             except Exception:
@@ -2103,10 +2177,8 @@ with tabs[2]:
                     paq_start_dt = datetime.combine(edited_start_date, time(0, 0, 0))
 
             df_paq = data1["df_master"].copy()
-            # ใช้เวลาเริ่มต้นที่แก้ไขได้เป็นตัวอ้างอิง
             df_paq["Sync_DateTime"] = paq_start_dt + pd.to_timedelta(df_paq["Time_Seconds"] - data1['detected_start_sec'], unit="s")
             
-            # คำนวณระยะเวลาในเตาอบเพื่อสร้างขอบเขตในการ Zoom
             zones = data1["cfg"]["zones"]
             total_furnace_length = zones[-1]["start"] + zones[-1]["length"] if zones else 0
             furnace_duration_secs = (total_furnace_length / data1['line_speed_mpm']) * 60 if data1.get('line_speed_mpm') else 3600
@@ -2150,7 +2222,6 @@ with tabs[2]:
                     st.warning("⚠️ อัปโหลดเกิน 6 ไฟล์ ระบบจะประมวลผลเฉพาะ 6 ไฟล์แรกเท่านั้นเพื่อป้องกันระบบค้าง")
                     rec_csv_files = rec_csv_files[:6]
                 
-            # เมนูเลือกรูปแบบการ Zoom
             if rec_dad_files or rec_csv_files:
                 st.markdown("#### 🔍 ตั้งค่าการแสดงผลกราฟ (View & Zoom Options)")
                 zoom_mode = st.radio(
@@ -2181,22 +2252,48 @@ with tabs[2]:
                     charts_to_render = []
                     
                     top_chs = [ch for ch in active_channels if ch[0] in ['CH001','CH002','CH003','CH004','CH005','CH006','CH007']]
-                    fig_top = render_single_chart(data, top_chs, COLORS_TOP, f'Top Zones ({machine_type})', fixed_y_range, '°C')
-                    add_paq_overlay(fig_top, df_paq, probe_cols, invalid_cols)
-                    add_zone_backgrounds(fig_top, zones, paq_start_dt, data1['detected_start_sec'], data1['line_speed_mpm'])
-                    charts_to_render.append({"title": "1) Top Zones", "fig": fig_top})
-
                     bot_chs = [ch for ch in active_channels if ch[0] in ['CH008','CH009','CH010','CH011','CH012','CH013','CH014']]
-                    fig_bot = render_single_chart(data, bot_chs, COLORS_BOT, f'Bottom Zones ({machine_type})', fixed_y_range, '°C')
-                    add_paq_overlay(fig_bot, df_paq, probe_cols, invalid_cols)
-                    add_zone_backgrounds(fig_bot, zones, paq_start_dt, data1['detected_start_sec'], data1['line_speed_mpm'])
-                    charts_to_render.append({"title": "2) Bottom Zones", "fig": fig_bot})
-
                     dry_chs = [ch for ch in active_channels if ch[0] in ['CH016','CH017']]
-                    fig_dry = render_single_chart(data, dry_chs, COLORS_DRY, f'Dryer Zones ({machine_type})', fixed_y_range, '°C')
-                    add_paq_overlay(fig_dry, df_paq, probe_cols, invalid_cols)
-                    add_zone_backgrounds(fig_dry, zones, paq_start_dt, data1['detected_start_sec'], data1['line_speed_mpm'])
-                    charts_to_render.append({"title": "3) Dryer Zones", "fig": fig_dry})
+                    
+                    split_charts = st.toggle("📊 แยกกราฟ Top / Bottom / Dryer เป็นรายโซนย่อย (Split Zone Charts)", key="split_cmb_dad")
+
+                    if split_charts:
+                        for i, ch in enumerate(top_chs):
+                            std_min, std_max = RECORDER_STANDARDS.get(machine_type, {}).get("Top", [None]*7)[i] if i < 7 else (None, None)
+                            fig_top = render_single_chart(data, [ch], [COLORS_TOP[i % len(COLORS_TOP)]], f'Top Zone: {ch[1]} ({machine_type})', fixed_y_range, '°C', std_min=std_min, std_max=std_max)
+                            add_paq_overlay(fig_top, df_paq, probe_cols, invalid_cols)
+                            add_zone_backgrounds(fig_top, zones, paq_start_dt, data1['detected_start_sec'], data1['line_speed_mpm'])
+                            charts_to_render.append({"title": f"Top Zone: {ch[1]}", "fig": fig_top})
+                            
+                        for i, ch in enumerate(bot_chs):
+                            std_min, std_max = RECORDER_STANDARDS.get(machine_type, {}).get("Bottom", [None]*7)[i] if i < 7 else (None, None)
+                            fig_bot = render_single_chart(data, [ch], [COLORS_BOT[i % len(COLORS_BOT)]], f'Bottom Zone: {ch[1]} ({machine_type})', fixed_y_range, '°C', std_min=std_min, std_max=std_max)
+                            add_paq_overlay(fig_bot, df_paq, probe_cols, invalid_cols)
+                            add_zone_backgrounds(fig_bot, zones, paq_start_dt, data1['detected_start_sec'], data1['line_speed_mpm'])
+                            charts_to_render.append({"title": f"Bottom Zone: {ch[1]}", "fig": fig_bot})
+                            
+                        for i, ch in enumerate(dry_chs):
+                            std_min, std_max = RECORDER_STANDARDS.get(machine_type, {}).get("Dryer", [None]*3)[i] if i < 3 else (None, None)
+                            c_color = COLORS_DRY.get(ch[0], '#FFA500')
+                            fig_dry = render_single_chart(data, [ch], {ch[0]: c_color}, f'Dryer Zone: {ch[1]} ({machine_type})', fixed_y_range, '°C', std_min=std_min, std_max=std_max)
+                            add_paq_overlay(fig_dry, df_paq, probe_cols, invalid_cols)
+                            add_zone_backgrounds(fig_dry, zones, paq_start_dt, data1['detected_start_sec'], data1['line_speed_mpm'])
+                            charts_to_render.append({"title": f"Dryer Zone: {ch[1]}", "fig": fig_dry})
+                    else:
+                        fig_top = render_single_chart(data, top_chs, COLORS_TOP, f'Top Zones ({machine_type})', fixed_y_range, '°C')
+                        add_paq_overlay(fig_top, df_paq, probe_cols, invalid_cols)
+                        add_zone_backgrounds(fig_top, zones, paq_start_dt, data1['detected_start_sec'], data1['line_speed_mpm'])
+                        charts_to_render.append({"title": "1) Top Zones", "fig": fig_top})
+
+                        fig_bot = render_single_chart(data, bot_chs, COLORS_BOT, f'Bottom Zones ({machine_type})', fixed_y_range, '°C')
+                        add_paq_overlay(fig_bot, df_paq, probe_cols, invalid_cols)
+                        add_zone_backgrounds(fig_bot, zones, paq_start_dt, data1['detected_start_sec'], data1['line_speed_mpm'])
+                        charts_to_render.append({"title": "2) Bottom Zones", "fig": fig_bot})
+
+                        fig_dry = render_single_chart(data, dry_chs, COLORS_DRY, f'Dryer Zones ({machine_type})', fixed_y_range, '°C')
+                        add_paq_overlay(fig_dry, df_paq, probe_cols, invalid_cols)
+                        add_zone_backgrounds(fig_dry, zones, paq_start_dt, data1['detected_start_sec'], data1['line_speed_mpm'])
+                        charts_to_render.append({"title": "3) Dryer Zones", "fig": fig_dry})
                     
                     if machine_type == 'NB2':
                         o2_chs = [ch for ch in active_channels if ch[0] in ['CH015', 'CH018']]
@@ -2215,7 +2312,7 @@ with tabs[2]:
                             charts_to_render.append({"title": "4) O2 & N2 Flow", "fig": fig_o2_n2})
                     
                     dew_chs = [ch for ch in active_channels if ch[0] == 'CH020']
-                    fig_dew = render_single_chart(data, dew_chs, COLORS_DEW, 'Dew Point / PAQ (°C)', [-100, 650], 'Cdp')
+                    fig_dew = render_single_chart(data, dew_chs, COLORS_DEW, 'Dew Point / PAQ (°C)', [-100, 650], 'Cdp', hline=-40)
                     if fig_dew: 
                         add_paq_overlay(fig_dew, df_paq, probe_cols, invalid_cols)
                         add_zone_backgrounds(fig_dew, zones, paq_start_dt, data1['detected_start_sec'], data1['line_speed_mpm'])
@@ -2225,11 +2322,9 @@ with tabs[2]:
                     
                     st.markdown("---")
                     st.markdown("##### 📥 Export Combined Recorder Data")
-                    # เตรียมข้อมูล Recorder
                     df_rec = pd.DataFrame(data)
                     if 'ts' in df_rec.columns:
                         df_rec = df_rec.rename(columns={'ts': 'Sync_DateTime'})
-                        # รวมกับ Datapaq (แบบ outer join)
                         df_merged = pd.merge(df_rec, df_paq[['Sync_DateTime'] + [c for c in probe_cols if c in df_paq.columns]], on='Sync_DateTime', how='outer').sort_values('Sync_DateTime')
                         excel_bytes = to_excel_bytes(df_merged)
                         st.download_button(label="📊 Download Combined Data (.xlsx)", data=excel_bytes, file_name="Combined_Recorder_Datapaq.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True, type="primary")
@@ -2239,21 +2334,41 @@ with tabs[2]:
                 df_deb = process_debinder_files(rec_csv_files, expected_furnace="NB1")
                 if not df_deb.empty:
                     charts_to_render = []
-                    fig_deb = make_subplots(specs=[[{"secondary_y": True}]])
                     zone_colors = ["#FF3333", "#1E90FF", "#2ED573", "#FF9F1A"]
-                    for i in range(1, 5):
-                        fig_deb.add_trace(go.Scatter(x=df_deb["DateTime"], y=df_deb[f"Zone #{i}"], name=f"Zone #{i} (Max)", mode="lines", line=dict(color=zone_colors[i-1], width=2)), secondary_y=False)
-                    fig_deb.add_trace(go.Scatter(x=df_deb["DateTime"], y=df_deb["Combustion Air Temp"], name="Comb Air (Max)", mode="lines", line=dict(color="#00E5FF", width=2, dash="dash")), secondary_y=True)
                     
-                    add_paq_overlay(fig_deb, df_paq, probe_cols, invalid_cols, is_dual_axis=True)
-                    add_zone_backgrounds(fig_deb, zones, paq_start_dt, data1['detected_start_sec'], data1['line_speed_mpm'])
+                    split_charts = st.toggle("📊 แยกกราฟเป็นรายโซนย่อย (Split Zone Charts)", key="split_cmb_deb_csv")
                     
-                    fig_deb.update_layout(
-                        hovermode="x unified", height=450, margin=dict(l=60, r=180, t=30, b=40),
-                        yaxis=dict(range=[0, 650], title="Temperature (°C)"),
-                        yaxis2=dict(title="Comb Air (°C)", overlaying="y", side="right", range=[0, 150])
-                    )
-                    charts_to_render.append({"title": "Debinder Zones", "fig": fig_deb})
+                    if split_charts:
+                        for i in range(1, 5):
+                            std_min, std_max = RECORDER_STANDARDS["NB1"]["Debinder"][i-1] if i-1 < len(RECORDER_STANDARDS["NB1"]["Debinder"]) else (None, None)
+                            fig_deb = go.Figure()
+                            fig_deb.add_trace(go.Scatter(x=df_deb["DateTime"], y=df_deb[f"Zone #{i}"], name=f"Zone #{i} (Max)", mode="lines", line=dict(color=zone_colors[i-1], width=2)))
+                            add_paq_overlay(fig_deb, df_paq, probe_cols, invalid_cols)
+                            apply_industrial_style(fig_deb, "Temperature (°C)", y_range=[0, 650], std_min=std_min, std_max=std_max, ts=df_deb["DateTime"])
+                            add_zone_backgrounds(fig_deb, zones, paq_start_dt, data1['detected_start_sec'], data1['line_speed_mpm'])
+                            charts_to_render.append({"title": f"Debinder Zone #{i}", "fig": fig_deb})
+                            
+                        fig_comb = go.Figure()
+                        fig_comb.add_trace(go.Scatter(x=df_deb["DateTime"], y=df_deb["Combustion Air Temp"], name="Comb Air (Max)", mode="lines", line=dict(color="#00E5FF", width=2, dash="dash")))
+                        add_paq_overlay(fig_comb, df_paq, probe_cols, invalid_cols)
+                        apply_industrial_style(fig_comb, "Comb Air (°C)", y_range=[0, 150])
+                        add_zone_backgrounds(fig_comb, zones, paq_start_dt, data1['detected_start_sec'], data1['line_speed_mpm'])
+                        charts_to_render.append({"title": "Combustion Air Temp", "fig": fig_comb})
+                    else:
+                        fig_deb = make_subplots(specs=[[{"secondary_y": True}]])
+                        for i in range(1, 5):
+                            fig_deb.add_trace(go.Scatter(x=df_deb["DateTime"], y=df_deb[f"Zone #{i}"], name=f"Zone #{i} (Max)", mode="lines", line=dict(color=zone_colors[i-1], width=2)), secondary_y=False)
+                        fig_deb.add_trace(go.Scatter(x=df_deb["DateTime"], y=df_deb["Combustion Air Temp"], name="Comb Air (Max)", mode="lines", line=dict(color="#00E5FF", width=2, dash="dash")), secondary_y=True)
+                        
+                        add_paq_overlay(fig_deb, df_paq, probe_cols, invalid_cols, is_dual_axis=True)
+                        add_zone_backgrounds(fig_deb, zones, paq_start_dt, data1['detected_start_sec'], data1['line_speed_mpm'])
+                        
+                        fig_deb.update_layout(
+                            hovermode="x unified", height=450, margin=dict(l=60, r=180, t=30, b=40),
+                            yaxis=dict(range=[0, 650], title="Temperature (°C)"),
+                            yaxis2=dict(title="Comb Air (°C)", overlaying="y", side="right", range=[0, 150])
+                        )
+                        charts_to_render.append({"title": "Debinder Zones", "fig": fig_deb})
                     
                     render_combined_charts_vertically(charts_to_render, zoom_mode, zoom_x_range, "deb")
                     
@@ -2272,36 +2387,70 @@ with tabs[2]:
                     fixed_y_range = [0, 650]
                     charts_to_render = []
                     
-                    fig1 = go.Figure()
+                    split_charts = st.toggle("📊 แยกกราฟ Top / Bottom / Dryer เป็นรายโซนย่อย (Split Zone Charts)", key="split_cmb_csv")
+                    
                     top_colors = ["#FF0000", "#008000", "#0000FF", "#8A2BE2", "#A52A2A", "#FFA500", "#9ACD32"]
-                    for i in range(1, 8):
-                        if f"Top Zone #{i}" in df_nb3.columns:
-                            fig1.add_trace(go.Scatter(x=df_nb3["DateTime"], y=df_nb3[f"Top Zone #{i}"], name=f"Top Zone #{i}", mode="lines", line=dict(color=top_colors[i-1], width=2)))
-                    add_paq_overlay(fig1, df_paq, probe_cols, invalid_cols)
-                    apply_industrial_style(fig1, "Temperature (°C)", y_range=fixed_y_range)
-                    add_zone_backgrounds(fig1, zones, paq_start_dt, data1['detected_start_sec'], data1['line_speed_mpm'])
-                    charts_to_render.append({"title": "1) Top Zones", "fig": fig1})
-
-                    fig2 = go.Figure()
                     bottom_colors = ["#00BFFF", "#FF1493", "#808080", "#00FF00", "#008000", "#0000FF", "#8A2BE2"]
-                    for i in range(1, 8):
-                        if f"Bottom Zone #{i}" in df_nb3.columns:
-                            fig2.add_trace(go.Scatter(x=df_nb3["DateTime"], y=df_nb3[f"Bottom Zone #{i}"], name=f"Bottom Zone #{i}", mode="lines", line=dict(color=bottom_colors[i-1], width=2)))
-                    add_paq_overlay(fig2, df_paq, probe_cols, invalid_cols)
-                    apply_industrial_style(fig2, "Temperature (°C)", y_range=fixed_y_range)
-                    add_zone_backgrounds(fig2, zones, paq_start_dt, data1['detected_start_sec'], data1['line_speed_mpm'])
-                    charts_to_render.append({"title": "2) Bottom Zones", "fig": fig2})
-
-                    fig3 = go.Figure()
                     dry_colors = ["#FFA500", "#9ACD32", "#008B8B"]
                     dryoff_names = ["DRYOFF1", "DRYOFF2", "DRYOFF3"]
-                    for i in range(1, 4):
-                        if dryoff_names[i-1] in df_nb3.columns:
-                            fig3.add_trace(go.Scatter(x=df_nb3["DateTime"], y=df_nb3[dryoff_names[i-1]], name=dryoff_names[i-1], mode="lines", line=dict(color=dry_colors[i-1], width=2)))
-                    add_paq_overlay(fig3, df_paq, probe_cols, invalid_cols)
-                    apply_industrial_style(fig3, "Temperature (°C)", y_range=fixed_y_range)
-                    add_zone_backgrounds(fig3, zones, paq_start_dt, data1['detected_start_sec'], data1['line_speed_mpm'])
-                    charts_to_render.append({"title": "3) DRYOFF", "fig": fig3})
+                    
+                    if split_charts:
+                        for i in range(1, 8):
+                            if f"Top Zone #{i}" in df_nb3.columns:
+                                std_min, std_max = RECORDER_STANDARDS["NB3"]["Top"][i-1] if i-1 < len(RECORDER_STANDARDS["NB3"]["Top"]) else (None, None)
+                                fig = go.Figure()
+                                fig.add_trace(go.Scatter(x=df_nb3["DateTime"], y=df_nb3[f"Top Zone #{i}"], name=f"Top Zone #{i}", mode="lines", line=dict(color=top_colors[i-1], width=2)))
+                                add_paq_overlay(fig, df_paq, probe_cols, invalid_cols)
+                                apply_industrial_style(fig, "Temperature (°C)", y_range=fixed_y_range, std_min=std_min, std_max=std_max, ts=df_nb3["DateTime"])
+                                add_zone_backgrounds(fig, zones, paq_start_dt, data1['detected_start_sec'], data1['line_speed_mpm'])
+                                charts_to_render.append({"title": f"Top Zone #{i}", "fig": fig})
+                                
+                        for i in range(1, 8):
+                            if f"Bottom Zone #{i}" in df_nb3.columns:
+                                std_min, std_max = RECORDER_STANDARDS["NB3"]["Bottom"][i-1] if i-1 < len(RECORDER_STANDARDS["NB3"]["Bottom"]) else (None, None)
+                                fig = go.Figure()
+                                fig.add_trace(go.Scatter(x=df_nb3["DateTime"], y=df_nb3[f"Bottom Zone #{i}"], name=f"Bottom Zone #{i}", mode="lines", line=dict(color=bottom_colors[i-1], width=2)))
+                                add_paq_overlay(fig, df_paq, probe_cols, invalid_cols)
+                                apply_industrial_style(fig, "Temperature (°C)", y_range=fixed_y_range, std_min=std_min, std_max=std_max, ts=df_nb3["DateTime"])
+                                add_zone_backgrounds(fig, zones, paq_start_dt, data1['detected_start_sec'], data1['line_speed_mpm'])
+                                charts_to_render.append({"title": f"Bottom Zone #{i}", "fig": fig})
+                                
+                        for i in range(1, 4):
+                            if dryoff_names[i-1] in df_nb3.columns:
+                                std_min, std_max = RECORDER_STANDARDS["NB3"]["Dryer"][i-1] if i-1 < len(RECORDER_STANDARDS["NB3"]["Dryer"]) else (None, None)
+                                fig = go.Figure()
+                                fig.add_trace(go.Scatter(x=df_nb3["DateTime"], y=df_nb3[dryoff_names[i-1]], name=dryoff_names[i-1], mode="lines", line=dict(color=dry_colors[i-1], width=2)))
+                                add_paq_overlay(fig, df_paq, probe_cols, invalid_cols)
+                                apply_industrial_style(fig, "Temperature (°C)", y_range=fixed_y_range, std_min=std_min, std_max=std_max, ts=df_nb3["DateTime"])
+                                add_zone_backgrounds(fig, zones, paq_start_dt, data1['detected_start_sec'], data1['line_speed_mpm'])
+                                charts_to_render.append({"title": f"{dryoff_names[i-1]}", "fig": fig})
+                    else:
+                        fig1 = go.Figure()
+                        for i in range(1, 8):
+                            if f"Top Zone #{i}" in df_nb3.columns:
+                                fig1.add_trace(go.Scatter(x=df_nb3["DateTime"], y=df_nb3[f"Top Zone #{i}"], name=f"Top Zone #{i}", mode="lines", line=dict(color=top_colors[i-1], width=2)))
+                        add_paq_overlay(fig1, df_paq, probe_cols, invalid_cols)
+                        apply_industrial_style(fig1, "Temperature (°C)", y_range=fixed_y_range)
+                        add_zone_backgrounds(fig1, zones, paq_start_dt, data1['detected_start_sec'], data1['line_speed_mpm'])
+                        charts_to_render.append({"title": "1) Top Zones", "fig": fig1})
+
+                        fig2 = go.Figure()
+                        for i in range(1, 8):
+                            if f"Bottom Zone #{i}" in df_nb3.columns:
+                                fig2.add_trace(go.Scatter(x=df_nb3["DateTime"], y=df_nb3[f"Bottom Zone #{i}"], name=f"Bottom Zone #{i}", mode="lines", line=dict(color=bottom_colors[i-1], width=2)))
+                        add_paq_overlay(fig2, df_paq, probe_cols, invalid_cols)
+                        apply_industrial_style(fig2, "Temperature (°C)", y_range=fixed_y_range)
+                        add_zone_backgrounds(fig2, zones, paq_start_dt, data1['detected_start_sec'], data1['line_speed_mpm'])
+                        charts_to_render.append({"title": "2) Bottom Zones", "fig": fig2})
+
+                        fig3 = go.Figure()
+                        for i in range(1, 4):
+                            if dryoff_names[i-1] in df_nb3.columns:
+                                fig3.add_trace(go.Scatter(x=df_nb3["DateTime"], y=df_nb3[dryoff_names[i-1]], name=dryoff_names[i-1], mode="lines", line=dict(color=dry_colors[i-1], width=2)))
+                        add_paq_overlay(fig3, df_paq, probe_cols, invalid_cols)
+                        apply_industrial_style(fig3, "Temperature (°C)", y_range=fixed_y_range)
+                        add_zone_backgrounds(fig3, zones, paq_start_dt, data1['detected_start_sec'], data1['line_speed_mpm'])
+                        charts_to_render.append({"title": "3) DRYOFF", "fig": fig3})
                     
                     fig4 = make_subplots(specs=[[{"secondary_y": True}]])
                     if "Oxygen EXIT" in df_nb3.columns:
